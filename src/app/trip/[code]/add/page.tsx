@@ -49,6 +49,8 @@ export default function AddExpensePage() {
   const [selectedParticipants, setSelectedParticipants] = useState<Set<string>>(
     new Set()
   );
+  const [splitMode, setSplitMode] = useState<'equal' | 'custom'>('equal');
+  const [customShares, setCustomShares] = useState<Record<string, string>>({});
 
   useEffect(() => {
     async function load() {
@@ -90,6 +92,30 @@ export default function AddExpensePage() {
     setSelectedParticipants(next);
   }
 
+	function handleSplitModeChange(newMode: string) {
+    const mode = newMode as 'equal' | 'custom';
+    setSplitMode(mode);
+
+    if (mode === 'custom') {
+      // 用当前金额平分预填
+      if (amountMinor > 0 && selectedParticipants.size > 0) {
+        const n = selectedParticipants.size;
+        const base = Math.floor(amountMinor / n);
+        const rem = amountMinor - base * n;
+        const next: Record<string, string> = {};
+        let i = 0;
+        for (const id of selectedParticipants) {
+          const amt = i < rem ? base + 1 : base;
+          next[id] = (amt / 100).toFixed(2);
+          i++;
+        }
+        setCustomShares(next);
+      }
+    } else {
+      setCustomShares({});
+    }
+  }
+
   async function handleSave() {
     if (!trip || !myMemberId) return;
     setError('');
@@ -124,6 +150,40 @@ export default function AddExpensePage() {
       setError('至少选择一位参与者');
       return;
     }
+		
+		// 自定义分摊校验
+    let customSharesForServer:
+      | Array<{ memberId: string; shareAmount: number }>
+      | undefined;
+
+    if (splitMode === 'custom') {
+      customSharesForServer = [];
+      for (const id of selectedParticipants) {
+        const v = customShares[id] ?? '';
+        if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(v)) {
+          setError('自定义金额格式不对（例如 120 或 120.50）');
+          return;
+        }
+        const parts = v.split('.');
+        const major = parts[0];
+        const minorPart = (parts[1] ?? '').padEnd(2, '0');
+        const minor = Number(major + minorPart);
+        if (minor <= 0) {
+          setError('每个人的金额必须大于 0');
+          return;
+        }
+        customSharesForServer.push({ memberId: id, shareAmount: minor });
+      }
+
+      const sum = customSharesForServer.reduce(
+        (a, b) => a + b.shareAmount,
+        0
+      );
+      if (sum !== amountMinor) {
+        setError('自定义金额加起来必须等于总额');
+        return;
+      }
+    }
 
     let effectiveRate: number;
     if (currency === trip.baseCurrency) {
@@ -147,6 +207,7 @@ export default function AddExpensePage() {
         exchangeRateUsed: effectiveRate,
         payerMemberId,
         participantMemberIds: Array.from(selectedParticipants),
+        customShares: customSharesForServer,
         idempotencyKey: generateUUID(),
       });
 
@@ -353,15 +414,95 @@ export default function AddExpensePage() {
                 );
               })}
             </div>
-
-            {perPerson > 0 && (
-              <p className="text-xs text-neutral-500 pt-1">
-                平分 · 每人约 {currencySymbol(trip.baseCurrency)}{' '}
-                {(perPerson / 100).toFixed(2)}
-              </p>
-            )}
           </CardContent>
         </Card>
+
+        {/* 分摊方式 */}
+        {selectedParticipants.size > 0 && (
+          <Card>
+            <CardContent className="pt-4 pb-4 space-y-3">
+              <Label>分摊方式</Label>
+              <Tabs value={splitMode} onValueChange={handleSplitModeChange}>
+                <TabsList className="w-full">
+                  <TabsTrigger value="equal" className="flex-1">
+                    平均
+                  </TabsTrigger>
+                  <TabsTrigger value="custom" className="flex-1">
+                    自定义
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+
+              {splitMode === 'equal' && perPerson > 0 && (
+                <p className="text-sm text-neutral-500">
+                  每人约 {currencySymbol(trip.baseCurrency)}{' '}
+                  {(perPerson / 100).toFixed(2)}
+                </p>
+              )}
+
+              {splitMode === 'custom' && (
+                <div className="space-y-2">
+                  {trip.members
+                    .filter((m) => selectedParticipants.has(m.id))
+                    .map((m) => (
+                      <div key={m.id} className="flex items-center gap-2">
+                        <span className="flex-1 text-sm truncate">
+                          {m.displayName}
+                        </span>
+                        <span className="text-sm text-neutral-400">
+                          {symbol}
+                        </span>
+                        <Input
+                          type="text"
+                          inputMode="decimal"
+                          className="w-24 text-right"
+                          value={customShares[m.id] ?? ''}
+                          onChange={(e) =>
+                            setCustomShares((prev) => ({
+                              ...prev,
+                              [m.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="0.00"
+                        />
+                      </div>
+                    ))}
+
+                  {(() => {
+                    const sum = Array.from(selectedParticipants).reduce(
+                      (acc, id) => {
+                        const v = customShares[id] ?? '';
+                        if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(v)) return acc;
+                        const parts = v.split('.');
+                        const major = parts[0];
+                        const minorPart = (parts[1] ?? '').padEnd(2, '0');
+                        return acc + Number(major + minorPart);
+                      },
+                      0
+                    );
+                    const ok = sum === amountMinor && amountMinor > 0;
+                    return (
+                      <div className="flex justify-between text-sm pt-2 border-t mt-2">
+                        <span className="text-neutral-500">已分配</span>
+                        <span
+                          className={
+                            ok
+                              ? 'text-green-600 font-medium'
+                              : 'text-red-600 font-medium'
+                          }
+                        >
+                          {symbol}
+                          {(sum / 100).toFixed(2)} / {symbol}
+                          {(amountMinor / 100).toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* 保存按钮 */}

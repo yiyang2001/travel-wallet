@@ -253,18 +253,26 @@ export async function addExpense(input: {
   exchangeRateUsed: number;
   payerMemberId: string;
   participantMemberIds: string[];
+  customShares?: Array<{ memberId: string; shareAmount: number }>;
   idempotencyKey: string;
 }): Promise<ActionResult<{ expenseId: string }>> {
   const trip = await findTripByInviteCode(input.inviteCode);
   if (!trip) return { ok: false, error: 'NOT_FOUND' };
 
   // 验证 description
-  if (!input.description || input.description.trim().length === 0 || input.description.length > 200) {
+  if (
+    !input.description ||
+    input.description.trim().length === 0 ||
+    input.description.length > 200
+  ) {
     return { ok: false, error: 'INVALID_DESCRIPTION' };
   }
 
   // 验证 amount
-  if (!Number.isSafeInteger(input.originalAmountMinor) || input.originalAmountMinor <= 0) {
+  if (
+    !Number.isSafeInteger(input.originalAmountMinor) ||
+    input.originalAmountMinor <= 0
+  ) {
     return { ok: false, error: 'INVALID_AMOUNT' };
   }
 
@@ -295,30 +303,91 @@ export async function addExpense(input: {
     exchangeRate: input.exchangeRateUsed,
   });
 
-  // 计算 shares
-  const participantMembers: MemberCreatedAt[] = uniqueParticipants.map((id) => {
-    const m = members!.find((x) => x.id === id)!;
-    return { id, createdAt: new Date(m.created_at) };
-  });
+  // ========== 计算 shares ==========
+  let shares: Array<{ memberId: string; shareAmount: number }>;
 
-  const shares = splitEqually({
-    totalMinor: baseAmountMinor,
-    members: participantMembers,
-  });
+  if (input.customShares && input.customShares.length > 0) {
+    // ===== 自定义分摊 =====
+    const customMap = new Map(
+      input.customShares.map((cs) => [cs.memberId, cs.shareAmount])
+    );
+
+    // 校验每个参与者都有份额
+    for (const id of uniqueParticipants) {
+      if (!customMap.has(id)) {
+        return { ok: false, error: 'MISSING_SHARE_FOR_PARTICIPANT' };
+      }
+    }
+
+    // 校验份额都是正整数
+    let customSum = 0;
+    for (const id of uniqueParticipants) {
+      const s = customMap.get(id)!;
+      if (!Number.isSafeInteger(s) || s <= 0) {
+        return { ok: false, error: 'INVALID_CUSTOM_SHARE' };
+      }
+      customSum += s;
+    }
+
+    // 校验总和 === originalAmountMinor
+    if (customSum !== input.originalAmountMinor) {
+      return { ok: false, error: 'SHARES_DO_NOT_MATCH_TOTAL' };
+    }
+
+    // 每个份额换算成 base currency
+    const baseShares = uniqueParticipants.map((id) =>
+      convertToBase({
+        originalAmountMinor: customMap.get(id)!,
+        exchangeRate: input.exchangeRateUsed,
+      })
+    );
+
+    // 修正舍入误差：把差值加到最大的一份
+    const baseSum = baseShares.reduce((a, b) => a + b, 0);
+    if (baseSum !== baseAmountMinor) {
+      const diff = baseAmountMinor - baseSum;
+      let maxIdx = 0;
+      for (let i = 1; i < baseShares.length; i++) {
+        if (baseShares[i] > baseShares[maxIdx]) maxIdx = i;
+      }
+      baseShares[maxIdx] += diff;
+    }
+
+    shares = uniqueParticipants.map((id, i) => ({
+      memberId: id,
+      shareAmount: baseShares[i],
+    }));
+  } else {
+    // ===== 平均分摊（现有逻辑） =====
+    const participantMembers: MemberCreatedAt[] = uniqueParticipants.map(
+      (id) => {
+        const m = members!.find((x) => x.id === id)!;
+        return { id, createdAt: new Date(m.created_at) };
+      }
+    );
+
+    shares = splitEqually({
+      totalMinor: baseAmountMinor,
+      members: participantMembers,
+    });
+  }
 
   // 调用 RPC
-  const { data: expenseId, error: rpcError } = await supabaseAdmin.rpc('add_expense_atomic', {
-    p_trip_id: trip.id,
-    p_description: input.description.trim(),
-    p_original_amount: input.originalAmountMinor,
-    p_original_currency: input.originalCurrency,
-    p_exchange_rate_used: input.exchangeRateUsed,
-    p_base_amount: baseAmountMinor,
-    p_payer_member_id: input.payerMemberId,
-    p_participant_ids: shares.map((s) => s.memberId),
-    p_share_amounts: shares.map((s) => s.shareAmount),
-    p_idempotency_key: input.idempotencyKey,
-  });
+  const { data: expenseId, error: rpcError } = await supabaseAdmin.rpc(
+    'add_expense_atomic',
+    {
+      p_trip_id: trip.id,
+      p_description: input.description.trim(),
+      p_original_amount: input.originalAmountMinor,
+      p_original_currency: input.originalCurrency,
+      p_exchange_rate_used: input.exchangeRateUsed,
+      p_base_amount: baseAmountMinor,
+      p_payer_member_id: input.payerMemberId,
+      p_participant_ids: shares.map((s) => s.memberId),
+      p_share_amounts: shares.map((s) => s.shareAmount),
+      p_idempotency_key: input.idempotencyKey,
+    }
+  );
 
   if (rpcError) return { ok: false, error: `DB_ERROR: ${rpcError.message}` };
   if (!expenseId) return { ok: false, error: 'DB_ERROR: no expense id returned' };
