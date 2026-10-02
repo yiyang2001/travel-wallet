@@ -82,20 +82,23 @@ export default function ExpensesPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const tripResult = await getTrip({ inviteCode: code });
+
+    // 3 个请求全部并行
+    const [tripResult, eResult, tResult] = await Promise.all([
+      getTrip({ inviteCode: code }),
+      getExpenses({ inviteCode: code }),
+      getTransfers({ inviteCode: code }),
+    ]);
+
     if (!tripResult.ok) {
       setLoading(false);
       return;
     }
-    setTrip(tripResult.data);
-    setMyMemberId(getMemberId(code));
 
-    const [eResult, tResult] = await Promise.all([
-      getExpenses({ inviteCode: code }),
-      getTransfers({ inviteCode: code }),
-    ]);
+    setTrip(tripResult.data);
     if (eResult.ok) setExpenses(eResult.data);
     if (tResult.ok) setTransfers(tResult.data);
+    setMyMemberId(getMemberId(code));
     setLoading(false);
   }, [code]);
 

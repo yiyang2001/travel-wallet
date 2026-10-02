@@ -59,24 +59,26 @@ export default function SettlementPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const tripResult = await getTrip({ inviteCode: code });
+
+    const [tripResult, bResult, sResult] = await Promise.all([
+      getTrip({ inviteCode: code }),
+      getBalances({ inviteCode: code }),
+      getSettlement({ inviteCode: code }),
+    ]);
+
     if (!tripResult.ok) {
       setLoading(false);
       return;
     }
-    setTrip(tripResult.data);
-    setMyMemberId(getMemberId(code));
 
-    const [bResult, sResult] = await Promise.all([
-      getBalances({ inviteCode: code }),
-      getSettlement({ inviteCode: code }),
-    ]);
+    setTrip(tripResult.data);
     if (bResult.ok) {
       setBalances(new Map(bResult.data.map((b) => [b.memberId, b.balance])));
     }
     if (sResult.ok) {
       setSettlement(sResult.data);
     }
+    setMyMemberId(getMemberId(code));
     setLoading(false);
   }, [code]);
 
