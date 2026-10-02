@@ -42,8 +42,28 @@ export default function MembersPage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-center text-neutral-500">加载中...</div>;
-  }
+    return (
+        <main className="min-h-screen bg-neutral-50 pb-8">
+        <div className="max-w-md mx-auto p-4 space-y-4">
+            <div className="flex items-center gap-3 pt-2">
+            <div className="h-8 w-16 bg-neutral-200 rounded animate-pulse" />
+            <div className="h-6 w-16 bg-neutral-200 rounded animate-pulse" />
+            </div>
+            <Card>
+            <CardContent className="pt-4 pb-4 space-y-3">
+                <div className="h-4 w-20 bg-neutral-200 rounded animate-pulse" />
+                {[1, 2, 3].map((i) => (
+                <div key={i} className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-neutral-200 animate-pulse" />
+                    <div className="h-4 w-20 bg-neutral-200 rounded animate-pulse" />
+                </div>
+                ))}
+            </CardContent>
+            </Card>
+        </div>
+        </main>
+    );
+    }
   if (!trip) {
     return <div className="p-8">找不到旅行</div>;
   }

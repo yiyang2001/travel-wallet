@@ -120,8 +120,35 @@ export default function SettlementPage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-center text-neutral-500">加载中...</div>;
-  }
+    return (
+        <main className="min-h-screen bg-neutral-50 pb-8">
+        <div className="max-w-md mx-auto p-4 space-y-4">
+            <div className="flex items-center gap-3 pt-2">
+            <div className="h-8 w-16 bg-neutral-200 rounded animate-pulse" />
+            <div className="h-6 w-20 bg-neutral-200 rounded animate-pulse" />
+            </div>
+            <Card>
+            <CardContent className="pt-4 pb-4 space-y-3">
+                <div className="h-4 w-12 bg-neutral-200 rounded animate-pulse" />
+                {[1, 2, 3].map((i) => (
+                <div key={i} className="flex justify-between">
+                    <div className="h-4 w-20 bg-neutral-200 rounded animate-pulse" />
+                    <div className="h-4 w-16 bg-neutral-200 rounded animate-pulse" />
+                </div>
+                ))}
+            </CardContent>
+            </Card>
+            <div className="h-4 w-24 bg-neutral-200 rounded animate-pulse px-1" />
+            <Card>
+            <CardContent className="py-3 space-y-2">
+                <div className="h-4 w-40 bg-neutral-200 rounded animate-pulse" />
+                <div className="h-3 w-24 bg-neutral-200 rounded animate-pulse" />
+            </CardContent>
+            </Card>
+        </div>
+        </main>
+    );
+    }
   if (!trip || !myMemberId) {
     return <div className="p-8">需要先认领身份</div>;
   }

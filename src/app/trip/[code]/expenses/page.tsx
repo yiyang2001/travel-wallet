@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   getTrip,
   getExpenses,
@@ -118,7 +119,27 @@ export default function ExpensesPage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-center text-neutral-500">加载中...</div>;
+    return (
+        <main className="min-h-screen bg-neutral-50 pb-24">
+        <div className="max-w-md mx-auto p-4 space-y-4">
+            <div className="flex items-center gap-3 pt-2">
+            <div className="h-8 w-16 bg-neutral-200 rounded animate-pulse" />
+            <div className="h-6 w-16 bg-neutral-200 rounded animate-pulse" />
+            </div>
+            <div className="h-10 bg-neutral-200 rounded animate-pulse" />
+            <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+                <Card key={i}>
+                <CardContent className="py-3 space-y-2">
+                    <div className="h-4 w-24 bg-neutral-200 rounded animate-pulse" />
+                    <div className="h-3 w-32 bg-neutral-200 rounded animate-pulse" />
+                </CardContent>
+                </Card>
+            ))}
+            </div>
+        </div>
+        </main>
+    );
   }
   if (!trip || !myMemberId) {
     return <div className="p-8">需要先认领身份</div>;
@@ -144,7 +165,10 @@ export default function ExpensesPage() {
         </div>
 
         {/* Tabs */}
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'expenses' | 'transfers')}>
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as "expenses" | "transfers")}
+        >
           <TabsList className="w-full">
             <TabsTrigger value="expenses" className="flex-1">
               消费 ({expenses.length})
@@ -156,7 +180,7 @@ export default function ExpensesPage() {
         </Tabs>
 
         {/* Expenses list */}
-        {tab === 'expenses' && (
+        {tab === "expenses" && (
           <div className="space-y-2">
             {expenses.length === 0 ? (
               <Card>
@@ -172,17 +196,24 @@ export default function ExpensesPage() {
                       <div className="min-w-0 flex-1">
                         <p className="font-medium truncate">{e.description}</p>
                         <p className="text-xs text-neutral-500 mt-0.5">
-                          {getMemberName(e.payerMemberId)} 支付 ·{' '}
+                          {getMemberName(e.payerMemberId)} 支付 ·{" "}
                           {formatDate(e.createdAt)}
                         </p>
                       </div>
                       <div className="text-right shrink-0">
                         <p className="font-medium">
-                          {formatMajor(e.originalAmount, currencySymbol(e.originalCurrency))}
+                          {formatMajor(
+                            e.originalAmount,
+                            currencySymbol(e.originalCurrency),
+                          )}
                         </p>
                         {e.originalCurrency !== trip.baseCurrency && (
                           <p className="text-xs text-neutral-500 mt-0.5">
-                            ≈ {formatMajor(e.baseAmount, currencySymbol(trip.baseCurrency))}
+                            ≈{" "}
+                            {formatMajor(
+                              e.baseAmount,
+                              currencySymbol(trip.baseCurrency),
+                            )}
                           </p>
                         )}
                       </div>
@@ -192,7 +223,7 @@ export default function ExpensesPage() {
                         className="text-xs text-red-500 hover:text-red-700"
                         onClick={() =>
                           setConfirmDelete({
-                            type: 'expense',
+                            type: "expense",
                             id: e.id,
                             label: e.description,
                           })
@@ -209,7 +240,7 @@ export default function ExpensesPage() {
         )}
 
         {/* Transfers list */}
-        {tab === 'transfers' && (
+        {tab === "transfers" && (
           <div className="space-y-2">
             {transfers.length === 0 ? (
               <Card>
@@ -224,7 +255,8 @@ export default function ExpensesPage() {
                     <div className="flex justify-between items-start gap-3">
                       <div className="min-w-0 flex-1">
                         <p className="font-medium">
-                          {getMemberName(t.fromMemberId)} → {getMemberName(t.toMemberId)}
+                          {getMemberName(t.fromMemberId)} →{" "}
+                          {getMemberName(t.toMemberId)}
                         </p>
                         <p className="text-xs text-neutral-500 mt-0.5">
                           {formatDate(t.createdAt)}
@@ -232,7 +264,10 @@ export default function ExpensesPage() {
                       </div>
                       <div className="text-right shrink-0">
                         <p className="font-medium">
-                          {formatMajor(t.amount, currencySymbol(trip.baseCurrency))}
+                          {formatMajor(
+                            t.amount,
+                            currencySymbol(trip.baseCurrency),
+                          )}
                         </p>
                       </div>
                     </div>
@@ -241,7 +276,7 @@ export default function ExpensesPage() {
                         className="text-xs text-red-500 hover:text-red-700"
                         onClick={() =>
                           setConfirmDelete({
-                            type: 'transfer',
+                            type: "transfer",
                             id: t.id,
                             label: `${getMemberName(t.fromMemberId)} → ${getMemberName(t.toMemberId)}`,
                           })
@@ -263,9 +298,7 @@ export default function ExpensesPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <Card className="w-full max-w-sm">
             <CardContent className="pt-6 space-y-4">
-              <p className="text-center">
-                确认删除「{confirmDelete.label}」？
-              </p>
+              <p className="text-center">确认删除「{confirmDelete.label}」？</p>
               <p className="text-xs text-center text-neutral-500">
                 删除后无法恢复
               </p>
@@ -290,15 +323,13 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Floating add button */}
-      <div className="fixed bottom-4 left-0 right-0 flex justify-center pointer-events-none">
-        <Button
-          size="lg"
-          className="rounded-full px-8 py-6 text-lg shadow-lg pointer-events-auto"
-          onClick={() => router.push(`/trip/${code}/add`)}
+      <div className="fixed bottom-24 left-0 right-0 flex justify-center pointer-events-none">
+        <Link
+          href={`/trip/${code}/add`}
+          className="rounded-full px-8 py-3 text-lg font-medium shadow-lg bg-neutral-900 text-white hover:bg-neutral-800 pointer-events-auto inline-flex items-center"
         >
           ＋ 记一笔
-        </Button>
+        </Link>
       </div>
     </main>
   );

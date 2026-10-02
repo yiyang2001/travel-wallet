@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import {
   getTrip,
   getBalances,
@@ -56,9 +57,51 @@ function formatRelative(iso: string): string {
   return `${mo}/${day} ${hh}:${mm}`;
 }
 
+// ========== 骨架屏 ==========
+function TripHomeSkeleton() {
+  return (
+    <main className="min-h-screen bg-neutral-50 pb-32">
+      <div className="max-w-md mx-auto p-4 space-y-4">
+        <div className="pt-2">
+          <div className="h-8 w-40 bg-neutral-200 rounded animate-pulse" />
+          <div className="flex gap-2 mt-3">
+            <div className="h-7 w-16 bg-neutral-200 rounded animate-pulse" />
+            <div className="h-7 w-16 bg-neutral-200 rounded animate-pulse" />
+            <div className="h-7 w-16 bg-neutral-200 rounded animate-pulse" />
+          </div>
+        </div>
+
+        <Card>
+          <CardContent className="pt-6 pb-6">
+            <div className="h-4 w-20 bg-neutral-200 rounded animate-pulse mb-3" />
+            <div className="h-9 w-40 bg-neutral-200 rounded animate-pulse mb-2" />
+            <div className="h-4 w-12 bg-neutral-200 rounded animate-pulse" />
+          </CardContent>
+        </Card>
+
+        <div>
+          <div className="h-4 w-20 bg-neutral-200 rounded animate-pulse mb-2 ml-1" />
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <Card key={i}>
+                <CardContent className="py-3 flex justify-between">
+                  <div className="space-y-2 flex-1">
+                    <div className="h-4 w-24 bg-neutral-200 rounded animate-pulse" />
+                    <div className="h-3 w-32 bg-neutral-200 rounded animate-pulse" />
+                  </div>
+                  <div className="h-5 w-16 bg-neutral-200 rounded animate-pulse" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export default function TripPage() {
   const params = useParams();
-  const router = useRouter();
   const code = params.code as string;
 
   const [loading, setLoading] = useState(true);
@@ -137,8 +180,9 @@ export default function TripPage() {
     await loadAll();
   }
 
+  // ========== 骨架屏 ==========
   if (loading) {
-    return <div className="p-8 text-center text-neutral-500">加载中...</div>;
+    return <TripHomeSkeleton />;
   }
 
   if (error && !trip) {
@@ -311,44 +355,42 @@ export default function TripPage() {
         </div>
 
         {/* Settlement button */}
-        <Button
-          variant="outline"
-          className="w-full"
-          onClick={() => router.push(`/trip/${code}/settlement`)}
+        <Link
+          href={`/trip/${code}/settlement`}
+          className="block w-full text-center border rounded-md py-2 text-sm font-medium hover:bg-neutral-50 transition"
         >
           查看最终清账
-        </Button>
+        </Link>
       </div>
 
       {/* Floating add button */}
       <div className="fixed bottom-24 left-0 right-0 flex justify-center pointer-events-none">
-        <Button
-          size="lg"
-          className="rounded-full px-8 py-6 text-lg shadow-lg pointer-events-auto"
-          onClick={() => router.push(`/trip/${code}/add`)}
+        <Link
+          href={`/trip/${code}/add`}
+          className="rounded-full px-8 py-3 text-lg font-medium shadow-lg bg-neutral-900 text-white hover:bg-neutral-800 pointer-events-auto inline-flex items-center"
         >
           ＋ 记一笔
-        </Button>
+        </Link>
       </div>
 
       {/* Bottom nav */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t">
         <div className="max-w-md mx-auto grid grid-cols-3">
-          <button className="py-3 text-sm font-medium text-neutral-900">
+          <div className="py-3 text-sm font-medium text-neutral-900 text-center">
             🏠 总览
-          </button>
-          <button
-            className="py-3 text-sm text-neutral-500"
-            onClick={() => router.push(`/trip/${code}/expenses`)}
+          </div>
+          <Link
+            href={`/trip/${code}/expenses`}
+            className="py-3 text-sm text-neutral-500 hover:text-neutral-900 text-center transition"
           >
             📋 账目
-          </button>
-          <button
-            className="py-3 text-sm text-neutral-500"
-            onClick={() => router.push(`/trip/${code}/members`)}
+          </Link>
+          <Link
+            href={`/trip/${code}/members`}
+            className="py-3 text-sm text-neutral-500 hover:text-neutral-900 text-center transition"
           >
             👥 成员
-          </button>
+          </Link>
         </div>
       </nav>
     </main>
