@@ -44,6 +44,7 @@ export default function AddExpensePage() {
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('CNY');
+  const [exchangeRateInput, setExchangeRateInput] = useState('');
   const [payerMemberId, setPayerMemberId] = useState<string>('');
   const [selectedParticipants, setSelectedParticipants] = useState<Set<string>>(
     new Set()
@@ -72,7 +73,7 @@ export default function AddExpensePage() {
       setSelectedParticipants(new Set(tripResult.data.members.map((m) => m.id)));
 
       // 默认币种 = Trip 默认消费币种
-      setCurrency(tripResult.data.defaultExpenseCurrency);
+      setExchangeRateInput(tripResult.data.defaultExchangeRate);
 
       setLoading(false);
     }
@@ -124,15 +125,17 @@ export default function AddExpensePage() {
       return;
     }
 
-    // 汇率
-    const exchangeRate = parseFloat(trip.defaultExchangeRate);
-    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
-      setError('Trip 汇率无效');
-      return;
+    let effectiveRate: number;
+    if (currency === trip.baseCurrency) {
+      effectiveRate = 1;
+    } else {
+      const parsed = parseFloat(exchangeRateInput);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100) {
+        setError('汇率无效（应在 0.01 到 100 之间）');
+        return;
+      }
+      effectiveRate = parsed;
     }
-
-    // 如果币种是 base currency，汇率用 1
-    const effectiveRate = currency === trip.baseCurrency ? 1 : exchangeRate;
 
     setSaving(true);
     try {
@@ -169,8 +172,8 @@ export default function AddExpensePage() {
   }
 
   const symbol = currencySymbol(currency);
-  const exchangeRate = parseFloat(trip.defaultExchangeRate);
   const showConversion = currency !== trip.baseCurrency;
+  const previewRate = showConversion ? parseFloat(exchangeRateInput) || 0 : 1;
 
   // 预览分摊
   const parts = amount.trim().split('.');
@@ -183,7 +186,7 @@ export default function AddExpensePage() {
   const participantCount = selectedParticipants.size;
   const perPerson =
     participantCount > 0
-      ? Math.ceil((amountMinor * (showConversion ? exchangeRate : 1)) / participantCount)
+      ? Math.ceil((amountMinor * previewRate) / participantCount)
       : 0;
 
   return (
@@ -239,10 +242,39 @@ export default function AddExpensePage() {
               </TabsList>
             </Tabs>
 
-            {showConversion && exchangeRate > 0 && amountMinor > 0 && (
+            {/* 汇率输入（仅在非 base currency 时显示） */}
+            {showConversion && (
+              <div className="pt-1 space-y-1">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-neutral-500">
+                    汇率（1 {currency} = ? {trip.baseCurrency}）
+                  </Label>
+                  {exchangeRateInput !== trip.defaultExchangeRate && (
+                    <button
+                      type="button"
+                      className="text-xs text-neutral-500 underline hover:text-neutral-700"
+                      onClick={() =>
+                        setExchangeRateInput(trip.defaultExchangeRate)
+                      }
+                    >
+                      用默认 {trip.defaultExchangeRate}
+                    </button>
+                  )}
+                </div>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder={trip.defaultExchangeRate}
+                  value={exchangeRateInput}
+                  onChange={(e) => setExchangeRateInput(e.target.value)}
+                  className="h-9 text-sm"
+                />
+              </div>
+            )}
+
+            {showConversion && previewRate > 0 && amountMinor > 0 && (
               <p className="text-xs text-neutral-500">
-                ≈ RM {((amountMinor * exchangeRate) / 100).toFixed(2)}
-                （1 {currency} = {exchangeRate} MYR）
+                ≈ RM {((amountMinor * previewRate) / 100).toFixed(2)}
               </p>
             )}
           </CardContent>

@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
+import { updateTripExchangeRate } from '@/lib/actions';
 
 interface ExpenseItem {
   id: string;
@@ -113,6 +114,10 @@ export default function TripPage() {
   const [claiming, setClaiming] = useState(false);
   const [newMemberName, setNewMemberName] = useState('');
 
+  const [editingRate, setEditingRate] = useState(false);
+  const [rateInput, setRateInput] = useState('');
+  const [savingRate, setSavingRate] = useState(false);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -177,6 +182,22 @@ export default function TripPage() {
     }
     saveMemberId(code, result.data.memberId);
     setClaiming(false);
+    await loadAll();
+  }
+
+  async function handleSaveRate() {
+    setSavingRate(true);
+    const result = await updateTripExchangeRate({
+      inviteCode: code,
+      newRate: rateInput,
+    });
+    if (!result.ok) {
+      alert(result.error);
+      setSavingRate(false);
+      return;
+    }
+    setEditingRate(false);
+    setSavingRate(false);
     await loadAll();
   }
 
@@ -258,7 +279,16 @@ export default function TripPage() {
       <div className="max-w-md mx-auto p-4 space-y-4">
         {/* Header */}
         <div className="pt-2">
-          <h1 className="text-2xl font-bold">{trip.name}</h1>
+          <div className="flex items-start justify-between gap-3">
+            <h1 className="text-2xl font-bold flex-1">{trip.name}</h1>
+            <Link
+              href={`/trip/${code}/settings`}
+              className="text-2xl text-neutral-400 hover:text-neutral-600 p-1 -mt-1 shrink-0"
+              aria-label="设置"
+            >
+              ⚙️
+            </Link>
+          </div>
           <div className="flex flex-wrap gap-2 mt-3">
             {trip.members.map((m) => (
               <span
@@ -279,24 +309,24 @@ export default function TripPage() {
         <Card>
           <CardContent className="pt-6 pb-6">
             <p className="text-sm text-neutral-500 mb-1">
-              {myMember?.displayName ?? '你'}目前
+              {myMember?.displayName ?? "你"}目前
             </p>
             <p
               className={`text-3xl font-bold ${
                 myBalance > 0
-                  ? 'text-green-600'
+                  ? "text-green-600"
                   : myBalance < 0
-                  ? 'text-red-600'
-                  : 'text-neutral-400'
+                    ? "text-red-600"
+                    : "text-neutral-400"
               }`}
             >
               {myBalance === 0
-                ? '已结清'
+                ? "已结清"
                 : formatMajor(myBalance, currencySymbol(trip.baseCurrency))}
             </p>
             {myBalance !== 0 && (
               <p className="text-sm text-neutral-500 mt-1">
-                {myBalance > 0 ? '应收' : '应付'}
+                {myBalance > 0 ? "应收" : "应付"}
               </p>
             )}
           </CardContent>
@@ -317,7 +347,7 @@ export default function TripPage() {
             <div className="space-y-2">
               {recentExpenses.map((e) => {
                 const payer = trip.members.find(
-                  (m) => m.id === e.payerMemberId
+                  (m) => m.id === e.payerMemberId,
                 );
                 return (
                   <Card key={e.id}>
@@ -325,7 +355,7 @@ export default function TripPage() {
                       <div className="min-w-0 flex-1">
                         <p className="font-medium truncate">{e.description}</p>
                         <p className="text-xs text-neutral-500 mt-0.5">
-                          {payer?.displayName ?? '未知'} 支付 ·{' '}
+                          {payer?.displayName ?? "未知"} 支付 ·{" "}
                           {formatRelative(e.createdAt)}
                         </p>
                       </div>
@@ -333,15 +363,15 @@ export default function TripPage() {
                         <p className="font-medium">
                           {formatMajor(
                             e.originalAmount,
-                            currencySymbol(e.originalCurrency)
+                            currencySymbol(e.originalCurrency),
                           )}
                         </p>
                         {e.originalCurrency !== trip.baseCurrency && (
                           <p className="text-xs text-neutral-500 mt-0.5">
-                            ≈{' '}
+                            ≈{" "}
                             {formatMajor(
                               e.baseAmount,
-                              currencySymbol(trip.baseCurrency)
+                              currencySymbol(trip.baseCurrency),
                             )}
                           </p>
                         )}

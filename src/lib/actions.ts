@@ -551,3 +551,51 @@ export async function getTransfers(input: {
     })),
   };
 }
+
+// ============ Action 14: updateTripExchangeRate ============
+
+export async function updateTripExchangeRate(input: {
+  inviteCode: string;
+  newRate: string;
+}): Promise<ActionResult<{ ok: true }>> {
+  const trip = await findTripByInviteCode(input.inviteCode);
+  if (!trip) return { ok: false, error: 'NOT_FOUND' };
+
+  const rateResult = validateExchangeRate(input.newRate);
+  if (!rateResult.ok) {
+    return { ok: false, error: `INVALID_RATE: ${rateResult.reason}` };
+  }
+
+  const { error } = await supabaseAdmin
+    .from('trips')
+    .update({ default_exchange_rate: rateResult.rate })
+    .eq('id', trip.id);
+
+  if (error) return { ok: false, error: `DB_ERROR: ${error.message}` };
+
+  return { ok: true, data: { ok: true } };
+}
+
+// ============ Action 15: updateTripName ============
+
+export async function updateTripName(input: {
+  inviteCode: string;
+  newName: string;
+}): Promise<ActionResult<{ ok: true }>> {
+  const trip = await findTripByInviteCode(input.inviteCode);
+  if (!trip) return { ok: false, error: 'NOT_FOUND' };
+
+  const trimmed = input.newName.trim();
+  if (trimmed.length === 0 || trimmed.length > 100) {
+    return { ok: false, error: 'INVALID_NAME' };
+  }
+
+  const { error } = await supabaseAdmin
+    .from('trips')
+    .update({ name: trimmed })
+    .eq('id', trip.id);
+
+  if (error) return { ok: false, error: `DB_ERROR: ${error.message}` };
+
+  return { ok: true, data: { ok: true } };
+}
