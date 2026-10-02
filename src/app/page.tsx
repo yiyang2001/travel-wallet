@@ -19,6 +19,7 @@ export default function HomePage() {
   const [tripName, setTripName] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [rate, setRate] = useState('0.62');
+  const [additionalMembersText, setAdditionalMembersText] = useState('');
 
   // 加入 Trip
   const [inviteCode, setInviteCode] = useState('');
@@ -27,12 +28,18 @@ export default function HomePage() {
     setError('');
     setLoading(true);
     try {
+      const additionalMemberNames = additionalMembersText
+        .split(/[,\n，]/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
       const result = await createTrip({
         name: tripName,
         baseCurrency: 'MYR',
         defaultExpenseCurrency: 'CNY',
         defaultExchangeRate: rate,
         creatorDisplayName: displayName,
+        additionalMemberNames,
       });
       if (!result.ok) {
         setError(result.error);
@@ -109,6 +116,20 @@ export default function HomePage() {
                 />
                 <p className="text-xs text-neutral-500 mt-1">
                   旅行中人民币兑马币的汇率，可以在之后修改
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="additionalMembers">其他成员（可选）</Label>
+                <textarea
+                  id="additionalMembers"
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-400"
+                  placeholder="每行一个名字，或用逗号分隔&#10;例如：Amy, Bob"
+                  value={additionalMembersText}
+                  onChange={(e) => setAdditionalMembersText(e.target.value)}
+                  rows={3}
+                />
+                <p className="text-xs text-neutral-500 mt-1">
+                  先把朋友加进来，他们打开链接时可以直接认领自己的名字。
                 </p>
               </div>
               <div className="flex gap-2">

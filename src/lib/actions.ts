@@ -52,6 +52,7 @@ export async function createTrip(input: {
   defaultExpenseCurrency: string;
   defaultExchangeRate: string;
   creatorDisplayName: string;
+  additionalMemberNames?: string[];
 }): Promise<ActionResult<{ tripId: string; inviteCode: string; memberId: string }>> {
   // 1. 校验汇率
   const rateResult = validateExchangeRate(input.defaultExchangeRate);
@@ -67,7 +68,18 @@ export async function createTrip(input: {
     return { ok: false, error: 'INVALID_DISPLAY_NAME' };
   }
 
-  // 3. 插入 trip
+  // 3. 校验 additionalMemberNames
+  const additionalNames = (input.additionalMemberNames ?? [])
+    .map((n) => n.trim())
+    .filter((n) => n.length > 0);
+
+  for (const name of additionalNames) {
+    if (name.length > 50) {
+      return { ok: false, error: 'INVALID_MEMBER_NAME' };
+    }
+  }
+
+  // 4. 插入 trip
   const { data: trip, error: tripError } = await supabaseAdmin
     .from('trips')
     .insert({
@@ -83,7 +95,7 @@ export async function createTrip(input: {
     return { ok: false, error: `DB_ERROR: ${tripError?.message ?? 'unknown'}` };
   }
 
-  // 4. 插入创建者
+  // 5. 插入创建者
   const { data: member, error: memberError } = await supabaseAdmin
     .from('trip_members')
     .insert({
@@ -94,9 +106,25 @@ export async function createTrip(input: {
     .single();
 
   if (memberError || !member) {
-    // 回滚：删除 trip
     await supabaseAdmin.from('trips').delete().eq('id', trip.id);
     return { ok: false, error: `DB_ERROR: ${memberError?.message ?? 'unknown'}` };
+  }
+
+  // 6. 批量插入其他成员
+  if (additionalNames.length > 0) {
+    const { error: bulkError } = await supabaseAdmin
+      .from('trip_members')
+      .insert(
+        additionalNames.map((name) => ({
+          trip_id: trip.id,
+          display_name: name,
+        }))
+      );
+
+    if (bulkError) {
+      await supabaseAdmin.from('trips').delete().eq('id', trip.id);
+      return { ok: false, error: `DB_ERROR: ${bulkError.message}` };
+    }
   }
 
   return {

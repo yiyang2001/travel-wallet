@@ -305,32 +305,81 @@ export default function TripPage() {
           </div>
         </div>
 
-        {/* Balance Card */}
+                {/* Balance Card */}
         <Card>
           <CardContent className="pt-6 pb-6">
             <p className="text-sm text-neutral-500 mb-1">
-              {myMember?.displayName ?? "你"}目前
+              {myMember?.displayName ?? '你'}目前
             </p>
             <p
               className={`text-3xl font-bold ${
                 myBalance > 0
-                  ? "text-green-600"
+                  ? 'text-green-600'
                   : myBalance < 0
-                    ? "text-red-600"
-                    : "text-neutral-400"
+                  ? 'text-red-600'
+                  : 'text-neutral-400'
               }`}
             >
               {myBalance === 0
-                ? "已结清"
+                ? '已结清'
                 : formatMajor(myBalance, currencySymbol(trip.baseCurrency))}
             </p>
             {myBalance !== 0 && (
               <p className="text-sm text-neutral-500 mt-1">
-                {myBalance > 0 ? "应收" : "应付"}
+                {myBalance > 0 ? '应收' : '应付'}
               </p>
             )}
           </CardContent>
         </Card>
+
+        {/* All Members Balances */}
+        {trip.members.length > 1 && (
+          <Card>
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs text-neutral-500 mb-3">所有人</p>
+              <div className="space-y-2">
+                {trip.members.map((m) => {
+                  const bal = balances.get(m.id) ?? 0;
+                  const isMe = m.id === myMemberId;
+                  return (
+                    <div
+                      key={m.id}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span
+                        className={
+                          isMe
+                            ? 'font-medium text-neutral-900'
+                            : 'text-neutral-700'
+                        }
+                      >
+                        {m.displayName}
+                        {isMe && (
+                          <span className="ml-1 text-xs text-neutral-400">
+                            (你)
+                          </span>
+                        )}
+                      </span>
+                      <span
+                        className={
+                          bal > 0
+                            ? 'text-green-600 font-medium'
+                            : bal < 0
+                            ? 'text-red-600 font-medium'
+                            : 'text-neutral-400'
+                        }
+                      >
+                        {bal === 0
+                          ? '—'
+                          : formatMajor(bal, currencySymbol(trip.baseCurrency))}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Recent expenses */}
         <div>
