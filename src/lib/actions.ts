@@ -627,3 +627,38 @@ export async function updateTripName(input: {
 
   return { ok: true, data: { ok: true } };
 }
+
+// ============ Action 16: updateExpenseDescription ============
+
+export async function updateExpenseDescription(input: {
+  inviteCode: string;
+  expenseId: string;
+  newDescription: string;
+}): Promise<ActionResult<{ ok: true }>> {
+  const trip = await findTripByInviteCode(input.inviteCode);
+  if (!trip) return { ok: false, error: 'NOT_FOUND' };
+
+  const trimmed = input.newDescription.trim();
+  if (trimmed.length === 0 || trimmed.length > 200) {
+    return { ok: false, error: 'INVALID_DESCRIPTION' };
+  }
+
+  // 确认这笔 expense 属于该 trip
+  const { data: expense, error: findError } = await supabaseAdmin
+    .from('expenses')
+    .select('id')
+    .eq('id', input.expenseId)
+    .eq('trip_id', trip.id)
+    .single();
+
+  if (findError || !expense) return { ok: false, error: 'NOT_FOUND' };
+
+  const { error } = await supabaseAdmin
+    .from('expenses')
+    .update({ description: trimmed })
+    .eq('id', input.expenseId);
+
+  if (error) return { ok: false, error: `DB_ERROR: ${error.message}` };
+
+  return { ok: true, data: { ok: true } };
+}

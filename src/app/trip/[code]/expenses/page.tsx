@@ -9,11 +9,13 @@ import {
   getTransfers,
   deleteExpense,
   deleteTransfer,
+  updateExpenseDescription,
   type TripWithMembers,
 } from '@/lib/actions';
 import { getMemberId } from '@/lib/session';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 function currencySymbol(code: string): string {
@@ -80,6 +82,12 @@ export default function ExpensesPage() {
     id: string;
     label: string;
   } | null>(null);
+  const [editingExpense, setEditingExpense] = useState<{
+    id: string;
+    description: string;
+  } | null>(null);
+  const [editInput, setEditInput] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -115,6 +123,30 @@ export default function ExpensesPage() {
       await deleteTransfer({ inviteCode: code, transferId: confirmDelete.id });
     }
     setConfirmDelete(null);
+    await loadAll();
+  }
+
+  function openEdit(e: ExpenseItem) {
+    setEditingExpense({ id: e.id, description: e.description });
+    setEditInput(e.description);
+  }
+
+  async function handleSaveEdit() {
+    if (!editingExpense) return;
+    if (!editInput.trim()) return;
+    setSavingEdit(true);
+    const result = await updateExpenseDescription({
+      inviteCode: code,
+      expenseId: editingExpense.id,
+      newDescription: editInput.trim(),
+    });
+    if (!result.ok) {
+      alert(result.error);
+      setSavingEdit(false);
+      return;
+    }
+    setEditingExpense(null);
+    setSavingEdit(false);
     await loadAll();
   }
 
@@ -218,7 +250,13 @@ export default function ExpensesPage() {
                         )}
                       </div>
                     </div>
-                    <div className="mt-2 flex justify-end">
+                    <div className="mt-2 flex justify-end gap-3">
+                      <button
+                        className="text-xs text-neutral-500 hover:text-neutral-700"
+                        onClick={() => openEdit(e)}
+                      >
+                        编辑
+                      </button>
                       <button
                         className="text-xs text-red-500 hover:text-red-700"
                         onClick={() =>
@@ -292,6 +330,40 @@ export default function ExpensesPage() {
           </div>
         )}
       </div>
+
+      {/* Edit description modal */}
+      {editingExpense && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <Card className="w-full max-w-sm">
+            <CardContent className="pt-6 space-y-4">
+              <p className="text-center font-medium">编辑描述</p>
+              <Input
+                value={editInput}
+                onChange={(e) => setEditInput(e.target.value)}
+                maxLength={200}
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setEditingExpense(null)}
+                  disabled={savingEdit}
+                >
+                  取消
+                </Button>
+                <Button
+                  className="flex-1"
+                  onClick={handleSaveEdit}
+                  disabled={savingEdit || !editInput.trim()}
+                >
+                  {savingEdit ? '保存中...' : '保存'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Confirm delete modal */}
       {confirmDelete && (
