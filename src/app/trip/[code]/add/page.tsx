@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   getTrip,
@@ -52,6 +52,14 @@ export default function AddExpensePage() {
   const [splitMode, setSplitMode] = useState<'equal' | 'custom'>('equal');
   const [customShares, setCustomShares] = useState<Record<string, string>>({});
 
+	// 拍照识别
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [parsing, setParsing] = useState(false);
+  const [parseError, setParseError] = useState('');
+  const [parsedItems, setParsedItems] = useState<
+    Array<{ name: string; qty: number; unit_price: number; amount: number }>
+  >([]);
+
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -81,6 +89,89 @@ export default function AddExpensePage() {
     }
     load();
   }, [code]);
+
+	  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setParseError('图片太大（最大 5MB）');
+      e.target.value = '';
+      return;
+    }
+
+    setParsing(true);
+    setParseError('');
+
+    try {
+      const base64 = await fileToBase64(file);
+      const mimeType = file.type || 'image/jpeg';
+
+      const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/parse-receipt`;
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${anonKey}`,
+          apikey: anonKey,
+        },
+        body: JSON.stringify({ imageBase64: base64, mimeType }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Parse failed' }));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const items = data.items as Array<{
+        name: string;
+        qty: number;
+        unit_price: number;
+        amount: number;
+      }>;
+
+      setParsedItems(items);
+
+      // 自动填金额
+      const totalMinor = items.reduce(
+        (acc, it) => acc + Math.round(Number(it.amount) * 100),
+        0
+      );
+      if (totalMinor > 0) {
+        setAmount((totalMinor / 100).toFixed(2));
+      }
+
+      // 自动切币种（如果是非 base currency）
+      if (data.currency && trip && data.currency !== trip.baseCurrency) {
+        setCurrency(data.currency);
+      }
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setParsing(false);
+      e.target.value = '';
+    }
+  }
+
+  function clearParsedItems() {
+    setParsedItems([]);
+    setParseError('');
+  }
 
   function toggleParticipant(memberId: string) {
     const next = new Set(selectedParticipants);
@@ -271,6 +362,63 @@ export default function AddExpensePage() {
             {error}
           </div>
         )}
+
+				        {/* 拍照识别 */}
+        <Card>
+          <CardContent className="pt-4 pb-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <Label>📷 拍照识别</Label>
+              {parsedItems.length > 0 && (
+                <button
+                  type="button"
+                  className="text-xs text-neutral-500 underline"
+                  onClick={clearParsedItems}
+                >
+                  清除
+                </button>
+              )}
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={parsing}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {parsing ? '识别中...' : '选择或拍照'}
+            </Button>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
+
+            {parseError && (
+              <p className="text-xs text-red-600">{parseError}</p>
+            )}
+
+            {parsedItems.length > 0 && (
+              <div className="pt-2 space-y-1 border-t">
+                {parsedItems.map((it, i) => (
+                  <div key={i} className="flex justify-between text-sm gap-2">
+                    <span className="truncate">
+                      {it.name}
+                      {it.qty > 1 && ` × ${it.qty}`}
+                    </span>
+                    <span className="text-neutral-600 shrink-0">
+                      {it.amount.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* 金额 */}
         <Card>
