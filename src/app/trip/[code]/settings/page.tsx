@@ -6,6 +6,7 @@ import {
   getTrip,
   updateTripExchangeRate,
   updateTripName,
+  exportExpensesCSV,
   type TripWithMembers,
 } from '@/lib/actions';
 import { getMemberId } from '@/lib/session';
@@ -32,6 +33,7 @@ export default function SettingsPage() {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [savingName, setSavingName] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   async function loadAll() {
     setLoading(true);
@@ -62,6 +64,31 @@ export default function SettingsPage() {
     setEditingRate(false);
     setSavingRate(false);
     await loadAll();
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const result = await exportExpensesCSV({ inviteCode: code });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+
+      const blob = new Blob([result.data.csv], {
+        type: 'text/csv;charset=utf-8',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.data.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
   }
 
   async function handleSaveName() {
@@ -228,6 +255,24 @@ export default function SettingsPage() {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Export */}
+        <Card>
+          <CardContent className="pt-4 pb-4 space-y-3">
+            <Label className="text-xs text-neutral-500">导出</Label>
+            <p className="text-xs text-neutral-500">
+              下载所有消费明细为 CSV 文件（Excel 可打开）。
+            </p>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={handleExport}
+              disabled={exporting}
+            >
+              {exporting ? '导出中...' : '导出 CSV'}
+            </Button>
           </CardContent>
         </Card>
       </div>

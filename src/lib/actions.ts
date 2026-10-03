@@ -731,3 +731,119 @@ export async function updateExpenseDescription(input: {
 
   return { ok: true, data: { ok: true } };
 }
+
+// ============ Action 17: exportExpensesCSV ============
+
+function escapeCsv(value: string | number): string {
+  const s = String(value);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+export async function exportExpensesCSV(input: {
+  inviteCode: string;
+}): Promise<ActionResult<{ csv: string; filename: string }>> {
+  const trip = await findTripByInviteCode(input.inviteCode);
+  if (!trip) return { ok: false, error: 'NOT_FOUND' };
+
+  const { data: expenses, error: e1 } = await supabaseAdmin
+    .from('expenses')
+    .select(
+      'id, description, original_amount, original_currency, exchange_rate_used, base_amount, payer_member_id, created_at'
+    )
+    .eq('trip_id', trip.id)
+    .order('created_at', { ascending: true });
+
+  if (e1) return { ok: false, error: `DB_ERROR: ${e1.message}` };
+
+  const expenseIds = (expenses ?? []).map((e) => e.id);
+
+  let participants: Array<{
+    expense_id: string;
+    member_id: string;
+    share_amount: number;
+  }> = [];
+  if (expenseIds.length > 0) {
+    const { data, error } = await supabaseAdmin
+      .from('expense_participants')
+      .select('expense_id, member_id, share_amount')
+      .in('expense_id', expenseIds);
+    if (error) return { ok: false, error: `DB_ERROR: ${error.message}` };
+    participants = data ?? [];
+  }
+
+  const { data: members, error: e3 } = await supabaseAdmin
+    .from('trip_members')
+    .select('id, display_name')
+    .eq('trip_id', trip.id);
+
+  if (e3) return { ok: false, error: `DB_ERROR: ${e3.message}` };
+
+  const memberMap = new Map(
+    (members ?? []).map((m) => [m.id, m.display_name])
+  );
+
+  const rows: string[] = [];
+  rows.push(
+    [
+      'Date',
+      'Description',
+      'Payer',
+      'Participant',
+      'Original Amount',
+      'Original Currency',
+      'Exchange Rate',
+      'Base Amount (MYR)',
+      'Share (MYR)',
+    ]
+      .map(escapeCsv)
+      .join(',')
+  );
+
+  for (const expense of expenses ?? []) {
+    const payerName = memberMap.get(expense.payer_member_id) ?? '?';
+    const expParticipants = participants.filter(
+      (p) => p.expense_id === expense.id
+    );
+
+    const d = new Date(expense.created_at);
+    const dateStr = `${d.getFullYear()}-${(d.getMonth() + 1)
+      .toString()
+      .padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')} ${d
+      .getHours()
+      .toString()
+      .padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+
+    for (const p of expParticipants) {
+      const participantName = memberMap.get(p.member_id) ?? '?';
+      rows.push(
+        [
+          dateStr,
+          expense.description,
+          payerName,
+          participantName,
+          (expense.original_amount / 100).toFixed(2),
+          expense.original_currency,
+          Number(expense.exchange_rate_used).toFixed(6),
+          (expense.base_amount / 100).toFixed(2),
+          (p.share_amount / 100).toFixed(2),
+        ]
+          .map(escapeCsv)
+          .join(',')
+      );
+    }
+  }
+
+  // UTF-8 BOM + 内容
+  const csv = '\uFEFF' + rows.join('\r\n');
+
+  const safeTripName = (trip.name || 'trip')
+    .replace(/[^\w\u4e00-\u9fa5-]/g, '_')
+    .slice(0, 30);
+  const dateSuffix = new Date().toISOString().slice(0, 10);
+  const filename = `${safeTripName}-expenses-${dateSuffix}.csv`;
+
+  return { ok: true, data: { csv, filename } };
+}
