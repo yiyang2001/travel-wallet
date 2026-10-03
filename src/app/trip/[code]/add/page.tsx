@@ -14,6 +14,17 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
+interface ParsedItem {
+  id: string;                    // 唯一标识
+  name: string;
+  qty: number;
+  unit_price: number;
+  amount: number;                // 总额（major units，例如 29.97）
+  type: 'product' | 'discount' | 'tax';
+  assignments: Array<{ memberId: string; qty: number }>;
+	targetItemId?: string;   // discount/tax 关联到哪个商品
+}
+
 function currencySymbol(code: string): string {
   switch (code) {
     case 'MYR':
@@ -53,12 +64,21 @@ export default function AddExpensePage() {
   const [customShares, setCustomShares] = useState<Record<string, string>>({});
 
 	// 拍照识别
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const [editingField, setEditingField] = useState<{
+    itemId: string;
+    field: 'name' | 'amount';
+  } | null>(null);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState('');
-  const [parsedItems, setParsedItems] = useState<
-    Array<{ name: string; qty: number; unit_price: number; amount: number }>
-  >([]);
+  const [parsedItems, setParsedItems] = useState<ParsedItem[]>([]);
+	const [receiptImage, setReceiptImage] = useState<string | null>(null);
+  const [showReceiptFull, setShowReceiptFull] = useState(false);
+	const [amountDraft, setAmountDraft] = useState<string>('');
+	const [receiptOriginalTotalMinor, setReceiptOriginalTotalMinor] = useState<
+    number | null
+  >(null);
 
   useEffect(() => {
     async function load() {
@@ -82,8 +102,11 @@ export default function AddExpensePage() {
       // 默认参与者 = 全部成员
       setSelectedParticipants(new Set(tripResult.data.members.map((m) => m.id)));
 
-      // 默认币种 = Trip 默认消费币种
+      // 默认汇率 = Trip 默认汇率
       setExchangeRateInput(tripResult.data.defaultExchangeRate);
+
+			// 默认币种 = Trip 默认消费币种
+			setCurrency(tripResult.data.defaultExpenseCurrency);
 
       setLoading(false);
     }
@@ -118,6 +141,7 @@ export default function AddExpensePage() {
     try {
       const base64 = await fileToBase64(file);
       const mimeType = file.type || 'image/jpeg';
+			setReceiptImage(`data:${mimeType};base64,${base64}`);
 
       const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/parse-receipt`;
       const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -138,20 +162,39 @@ export default function AddExpensePage() {
       }
 
       const data = await res.json();
-      const items = data.items as Array<{
+      const rawItems = data.items as Array<{
         name: string;
         qty: number;
         unit_price: number;
         amount: number;
       }>;
 
+      const items: ParsedItem[] = rawItems.map((it) => {
+        const type = classifyItem(it.name);
+        const qty = Math.max(1, Math.round(it.qty || 1));
+        const isProduct = type === 'product';
+        return {
+          id: makeId(),
+          name: it.name,
+          qty,
+          unit_price: it.unit_price,
+          amount: it.amount,
+          type,
+          assignments:
+            isProduct && myMemberId
+              ? [{ memberId: myMemberId, qty }]
+              : [],
+        };
+      });
+
       setParsedItems(items);
 
-      // 自动填金额
       const totalMinor = items.reduce(
         (acc, it) => acc + Math.round(Number(it.amount) * 100),
         0
       );
+      setReceiptOriginalTotalMinor(totalMinor);
+
       if (totalMinor > 0) {
         setAmount((totalMinor / 100).toFixed(2));
       }
@@ -168,9 +211,288 @@ export default function AddExpensePage() {
     }
   }
 
+	  function makeId(): string {
+    return Math.random().toString(36).slice(2, 11);
+  }
+
+  function classifyItem(name: string): 'product' | 'discount' | 'tax' {
+    const lower = name.toLowerCase();
+    if (
+      lower.includes('discount') ||
+      lower.includes('折扣') ||
+      lower.includes('优惠') ||
+      lower.includes('saving')
+    ) {
+      return 'discount';
+    }
+    if (
+      lower.includes('tax') ||
+      lower.includes('税') ||
+      lower.includes('vat') ||
+      lower.includes('gst')
+    ) {
+      return 'tax';
+    }
+    return 'product';
+  }
+
+  function toggleMemberForItem(itemId: string, memberId: string) {
+    setParsedItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        const existing = item.assignments.find((a) => a.memberId === memberId);
+        if (existing) {
+          // 移除
+          const next = item.assignments.filter((a) => a.memberId !== memberId);
+          // 重新归一 qty（总分配数量要等于 item.qty）
+          return { ...item, assignments: rebalanceAssignments(item, next) };
+        } else {
+          // 添加：默认 qty 1
+          const next = [...item.assignments, { memberId, qty: 1 }];
+          return { ...item, assignments: rebalanceAssignments(item, next) };
+        }
+      })
+    );
+  }
+
+  function rebalanceAssignments(
+    item: ParsedItem,
+    assignments: Array<{ memberId: string; qty: number }>
+  ): Array<{ memberId: string; qty: number }> {
+    if (assignments.length === 0) return [];
+
+    // 单人：全部给这人
+    if (assignments.length === 1) {
+      return [{ ...assignments[0], qty: item.qty }];
+    }
+
+    // qty=1 多人：每人 qty=1（计算时平分）
+    if (item.qty === 1) {
+      return assignments.map((a) => ({ ...a, qty: 1 }));
+    }
+
+    // qty>1 多人：总和必须 = item.qty
+    const currentSum = assignments.reduce((a, x) => a + x.qty, 0);
+    if (currentSum === item.qty) return assignments;
+
+    if (currentSum < item.qty) {
+      const diff = item.qty - currentSum;
+      return [
+        { ...assignments[0], qty: assignments[0].qty + diff },
+        ...assignments.slice(1),
+      ];
+    }
+
+    // 超出：从后往前减
+    const result = assignments.map((a) => ({ ...a }));
+    let excess = currentSum - item.qty;
+    for (let i = result.length - 1; i >= 0 && excess > 0; i--) {
+      const canReduce = result[i].qty - 1;
+      const reduce = Math.min(canReduce, excess);
+      result[i].qty -= reduce;
+      excess -= reduce;
+    }
+    return result.filter((a) => a.qty > 0);
+  }
+
+  function setMemberQtyForItem(itemId: string, memberId: string, qty: number) {
+    setParsedItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        if (qty < 1) return item;
+        const next = item.assignments.map((a) =>
+          a.memberId === memberId ? { ...a, qty } : a
+        );
+        return { ...item, assignments: rebalanceAssignments(item, next) };
+      })
+    );
+  }
+
+  function deleteParsedItem(itemId: string) {
+    setParsedItems((prev) => prev.filter((it) => it.id !== itemId));
+  }
+
+  function addManualItem(type: 'product' | 'discount' | 'tax' = 'product') {
+    const defaultName =
+      type === 'discount' ? 'Discount' : type === 'tax' ? 'Tax' : 'Product';
+    const newItem: ParsedItem = {
+      id: makeId(),
+      name: defaultName,
+      qty: 1,
+      unit_price: 0,
+      amount: 0,
+      type,
+      assignments:
+        type === 'product' && myMemberId
+          ? [{ memberId: myMemberId, qty: 1 }]
+          : [],
+    };
+    setParsedItems((prev) => [...prev, newItem]);
+  }
+
+  function updateParsedItemName(itemId: string, name: string) {
+    setParsedItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, name } : it))
+    );
+  }
+
+  function updateParsedItemAmount(itemId: string, amount: number) {
+    setParsedItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId
+          ? { ...it, amount, unit_price: it.qty > 0 ? amount / it.qty : 0 }
+          : it
+      )
+    );
+  }
+
+	function setItemTarget(itemId: string, targetItemId: string) {
+    setParsedItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId
+          ? { ...it, targetItemId: targetItemId || undefined }
+          : it
+      )
+    );
+  }
+
   function clearParsedItems() {
     setParsedItems([]);
     setParseError('');
+		setReceiptImage(null);
+		setAmount('');
+		setReceiptOriginalTotalMinor(null);
+  }
+
+  /**
+   * 计算每个人的应付金额
+   * - 商品：按 assignments 的 qty 比例分
+   * - 折扣/税：如果关联到某商品，按那个商品的分配方式分给相应的人
+   *             否则按商品小计比例分摊
+   */
+  function computePersonalShares(): Map<string, number> {
+    const shares = new Map<string, number>();
+    if (!trip) return shares;
+
+    trip.members.forEach((m) => shares.set(m.id, 0));
+
+    const productSubtotal = new Map<string, number>();
+    trip.members.forEach((m) => productSubtotal.set(m.id, 0));
+
+    let totalProductMinor = 0;
+    let adjustMinor = 0;
+
+    // 内部工具：把 minor 按 qty + assignments 分配给成员，累加到 productSubtotal
+    // 返回本次实际分配的总额
+    function distribute(
+      minor: number,
+      qty: number,
+      assignments: Array<{ memberId: string; qty: number }>
+    ): number {
+      if (assignments.length === 0 || qty === 0) return 0;
+
+      // qty=1 且多人：平分
+      if (qty === 1 && assignments.length > 1) {
+        const n = assignments.length;
+        const base = Math.floor(minor / n);
+        const r = minor - base * n;
+        let sum = 0;
+        assignments.forEach((a, idx) => {
+          const amt = base + (idx < r ? 1 : 0);
+          productSubtotal.set(
+            a.memberId,
+            (productSubtotal.get(a.memberId) ?? 0) + amt
+          );
+          sum += amt;
+        });
+        return sum;
+      }
+
+      // 其他：逐份分配
+      const totalQty = assignments.reduce((a, x) => a + x.qty, 0);
+      if (totalQty === 0) return 0;
+
+      const basePerUnit = Math.floor(minor / qty);
+      const r = minor - basePerUnit * qty;
+
+      let unitIdx = 0;
+      let sum = 0;
+      for (const a of assignments) {
+        let memberTotal = 0;
+        for (let i = 0; i < a.qty; i++) {
+          memberTotal += basePerUnit + (unitIdx < r ? 1 : 0);
+          unitIdx++;
+        }
+        productSubtotal.set(
+          a.memberId,
+          (productSubtotal.get(a.memberId) ?? 0) + memberTotal
+        );
+        sum += memberTotal;
+      }
+      return sum;
+    }
+
+    // ========== 第一遍：处理所有 products ==========
+    for (const item of parsedItems) {
+      if (item.type !== 'product') continue;
+      const minor = Math.round(item.amount * 100);
+      const sum = distribute(minor, item.qty, item.assignments);
+      totalProductMinor += sum;
+    }
+
+    // ========== 第二遍：处理 discounts / taxes ==========
+    for (const item of parsedItems) {
+      if (item.type === 'product') continue;
+      const minor = Math.round(item.amount * 100);
+
+      // 有 targetItemId 且有效：直接分配到目标商品的成员
+      if (item.targetItemId) {
+        const target = parsedItems.find((x) => x.id === item.targetItemId);
+        if (
+          target &&
+          target.type === 'product' &&
+          target.assignments.length > 0
+        ) {
+          const sum = distribute(minor, target.qty, target.assignments);
+          totalProductMinor += sum;
+          continue;
+        }
+      }
+
+      // 否则进池，按比例分摊
+      adjustMinor += minor;
+    }
+
+    // ========== 第三遍：按比例分摊 adjustMinor ==========
+    trip.members.forEach((m) => {
+      const subtotal = productSubtotal.get(m.id) ?? 0;
+      if (subtotal === 0) {
+        shares.set(m.id, 0);
+        return;
+      }
+      const proportion =
+        totalProductMinor > 0 ? subtotal / totalProductMinor : 0;
+      const adjust = Math.round(adjustMinor * proportion);
+      shares.set(m.id, subtotal + adjust);
+    });
+
+    // 修正总和的舍入误差
+    const sumShares = Array.from(shares.values()).reduce((a, b) => a + b, 0);
+    const expectedTotal = totalProductMinor + adjustMinor;
+    const diff = expectedTotal - sumShares;
+    if (diff !== 0) {
+      let maxId: string | null = null;
+      let maxVal = -Infinity;
+      for (const [id, v] of shares) {
+        if (v > maxVal) {
+          maxVal = v;
+          maxId = id;
+        }
+      }
+      if (maxId) shares.set(maxId, shares.get(maxId)! + diff);
+    }
+
+    return shares;
   }
 
   function toggleParticipant(memberId: string) {
@@ -207,111 +529,131 @@ export default function AddExpensePage() {
     }
   }
 
-  async function handleSave() {
-    if (!trip || !myMemberId) return;
-    setError('');
+	async function handleSave() {
+		if (!trip || !myMemberId) return;
+		setError('');
 
-    // 解析金额：用户输入 "100.50" -> 10050
-    const trimmed = amount.trim();
-    if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(trimmed)) {
-      setError('金额格式不对（例如 100 或 100.50）');
-      return;
-    }
-    const parts = trimmed.split('.');
-    const major = parts[0];
-    const minorPart = (parts[1] ?? '').padEnd(2, '0');
-    const amountMinor = Number(major + minorPart);
+		if (!description.trim()) {
+			setError('请输入描述');
+			return;
+		}
 
-    if (amountMinor < 1 || amountMinor > 10000000) {
-      setError('金额超出范围（0.01 到 100,000）');
-      return;
-    }
+		if (!payerMemberId) {
+			setError('请选择付款人');
+			return;
+		}
 
-    if (!description.trim()) {
-      setError('请输入描述');
-      return;
-    }
+		// ===== 分支 A：使用拍照识别结果 =====
+		let finalAmountMinor: number;
+		let finalParticipantIds: string[];
+		let finalCustomShares: Array<{ memberId: string; shareAmount: number }>;
 
-    if (!payerMemberId) {
-      setError('请选择付款人');
-      return;
-    }
+		if (parsedItems.length > 0) {
+			const personalShares = computePersonalShares();
+			const sharesArray = Array.from(personalShares.entries())
+				.filter(([, v]) => v > 0)
+				.map(([memberId, shareAmount]) => ({ memberId, shareAmount }));
 
-    if (selectedParticipants.size < 1) {
-      setError('至少选择一位参与者');
-      return;
-    }
-		
-		// 自定义分摊校验
-    let customSharesForServer:
-      | Array<{ memberId: string; shareAmount: number }>
-      | undefined;
+			if (sharesArray.length === 0) {
+				setError('没有分配任何商品');
+				return;
+			}
 
-    if (splitMode === 'custom') {
-      customSharesForServer = [];
-      for (const id of selectedParticipants) {
-        const v = customShares[id] ?? '';
-        if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(v)) {
-          setError('自定义金额格式不对（例如 120 或 120.50）');
-          return;
-        }
-        const parts = v.split('.');
-        const major = parts[0];
-        const minorPart = (parts[1] ?? '').padEnd(2, '0');
-        const minor = Number(major + minorPart);
-        if (minor <= 0) {
-          setError('每个人的金额必须大于 0');
-          return;
-        }
-        customSharesForServer.push({ memberId: id, shareAmount: minor });
-      }
+			finalAmountMinor = sharesArray.reduce((a, s) => a + s.shareAmount, 0);
+			finalParticipantIds = sharesArray.map((s) => s.memberId);
+			finalCustomShares = sharesArray;
+		} else {
+			// ===== 分支 B：手动输入 =====
+			const trimmed = amount.trim();
+			if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(trimmed)) {
+				setError('金额格式不对（例如 100 或 100.50）');
+				return;
+			}
+			const parts = trimmed.split('.');
+			const major = parts[0];
+			const minorPart = (parts[1] ?? '').padEnd(2, '0');
+			const amountMinor = Number(major + minorPart);
 
-      const sum = customSharesForServer.reduce(
-        (a, b) => a + b.shareAmount,
-        0
-      );
-      if (sum !== amountMinor) {
-        setError('自定义金额加起来必须等于总额');
-        return;
-      }
-    }
+			if (amountMinor < 1 || amountMinor > 10000000) {
+				setError('金额超出范围（0.01 到 100,000）');
+				return;
+			}
 
-    let effectiveRate: number;
-    if (currency === trip.baseCurrency) {
-      effectiveRate = 1;
-    } else {
-      const parsed = parseFloat(exchangeRateInput);
-      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100) {
-        setError('汇率无效（应在 0.01 到 100 之间）');
-        return;
-      }
-      effectiveRate = parsed;
-    }
+			if (selectedParticipants.size < 1) {
+				setError('至少选择一位参与者');
+				return;
+			}
 
-    setSaving(true);
-    try {
-      const result = await addExpense({
-        inviteCode: code,
-        description: description.trim(),
-        originalAmountMinor: amountMinor,
-        originalCurrency: currency,
-        exchangeRateUsed: effectiveRate,
-        payerMemberId,
-        participantMemberIds: Array.from(selectedParticipants),
-        customShares: customSharesForServer,
-        idempotencyKey: generateUUID(),
-      });
+			finalAmountMinor = amountMinor;
+			finalParticipantIds = Array.from(selectedParticipants);
+			finalCustomShares = [];
 
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
+			if (splitMode === 'custom') {
+				for (const id of selectedParticipants) {
+					const v = customShares[id] ?? '';
+					if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(v)) {
+						setError('自定义金额格式不对（例如 120 或 120.50）');
+						return;
+					}
+					const p = v.split('.');
+					const minorPart2 = (p[1] ?? '').padEnd(2, '0');
+					const minor = Number(p[0] + minorPart2);
+					if (minor <= 0) {
+						setError('每个人的金额必须大于 0');
+						return;
+					}
+					finalCustomShares.push({ memberId: id, shareAmount: minor });
+				}
 
-      router.push(`/trip/${code}`);
-    } finally {
-      setSaving(false);
-    }
-  }
+				const sum = finalCustomShares.reduce((a, b) => a + b.shareAmount, 0);
+				if (sum !== amountMinor) {
+					setError('自定义金额加起来必须等于总额');
+					return;
+				}
+			} else {
+				// 平均分摊：不传 customShares
+				finalCustomShares = [];
+			}
+		}
+
+		// ===== 汇率 =====
+		let effectiveRate: number;
+		if (currency === trip.baseCurrency) {
+			effectiveRate = 1;
+		} else {
+			const parsed = parseFloat(exchangeRateInput);
+			if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100) {
+				setError('汇率无效（应在 0.01 到 100 之间）');
+				return;
+			}
+			effectiveRate = parsed;
+		}
+
+		setSaving(true);
+		try {
+			const result = await addExpense({
+				inviteCode: code,
+				description: description.trim(),
+				originalAmountMinor: finalAmountMinor,
+				originalCurrency: currency,
+				exchangeRateUsed: effectiveRate,
+				payerMemberId,
+				participantMemberIds: finalParticipantIds,
+				customShares:
+					finalCustomShares.length > 0 ? finalCustomShares : undefined,
+				idempotencyKey: generateUUID(),
+			});
+
+			if (!result.ok) {
+				setError(result.error);
+				return;
+			}
+
+			router.push(`/trip/${code}`);
+		} finally {
+			setSaving(false);
+		}
+	}
 
   if (loading) {
     return <div className="p-8 text-center text-neutral-500">加载中...</div>;
@@ -363,11 +705,11 @@ export default function AddExpensePage() {
           </div>
         )}
 
-				        {/* 拍照识别 */}
+        {/* 收据卡片 */}
         <Card>
           <CardContent className="pt-4 pb-4 space-y-3">
             <div className="flex items-center justify-between">
-              <Label>📷 拍照识别</Label>
+              <Label>📷 收据</Label>
               {parsedItems.length > 0 && (
                 <button
                   type="button"
@@ -379,65 +721,421 @@ export default function AddExpensePage() {
               )}
             </div>
 
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              disabled={parsing}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {parsing ? '识别中...' : '选择或拍照'}
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={parsing}
+                onClick={() => cameraInputRef.current?.click()}
+              >
+                📷 拍照
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={parsing}
+                onClick={() => galleryInputRef.current?.click()}
+              >
+                🖼 相册
+              </Button>
+            </div>
 
             <input
-              ref={fileInputRef}
+              ref={cameraInputRef}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
               onChange={handleImageUpload}
             />
+            <input
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
 
-            {parseError && (
-              <p className="text-xs text-red-600">{parseError}</p>
-            )}
-
-            {parsedItems.length > 0 && (
-              <div className="pt-2 space-y-1 border-t">
-                {parsedItems.map((it, i) => (
-                  <div key={i} className="flex justify-between text-sm gap-2">
-                    <span className="truncate">
-                      {it.name}
-                      {it.qty > 1 && ` × ${it.qty}`}
-                    </span>
-                    <span className="text-neutral-600 shrink-0">
-                      {it.amount.toFixed(2)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+            {parsing && <p className="text-sm text-neutral-500">识别中...</p>}
+            {parseError && <p className="text-xs text-red-600">{parseError}</p>}
+						{receiptImage && (
+              <button
+                type="button"
+                onClick={() => setShowReceiptFull(true)}
+                className="mt-2 w-full text-left"
+              >
+                <img
+                  src={receiptImage}
+                  alt="收据"
+                  className="w-full max-h-48 object-contain rounded border bg-neutral-50"
+                />
+                <p className="text-xs text-neutral-400 mt-1 text-center">
+                  点击查看大图
+                </p>
+              </button>
             )}
           </CardContent>
         </Card>
+
+        {/* 谁买了什么 */}
+        {parsedItems.length > 0 && (
+          <Card>
+            <CardContent className="pt-4 pb-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>谁买了什么？</Label>
+                <div className="flex gap-2 text-xs">
+                  <button
+                    type="button"
+                    className="text-neutral-500 underline"
+                    onClick={() => addManualItem('product')}
+                  >
+                    + Product
+                  </button>
+                  <button
+                    type="button"
+                    className="text-neutral-500 underline"
+                    onClick={() => addManualItem('discount')}
+                  >
+                    + Discount
+                  </button>
+                  <button
+                    type="button"
+                    className="text-neutral-500 underline"
+                    onClick={() => addManualItem('tax')}
+                  >
+                    + Tax
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {parsedItems.map((item) => {
+                  const isProduct = item.type === "product";
+                  const isEditingName =
+                    editingField?.itemId === item.id &&
+                    editingField.field === "name";
+                  const isEditingAmount =
+                    editingField?.itemId === item.id &&
+                    editingField.field === "amount";
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="pb-3 border-b last:border-b-0"
+                    >
+                      {/* 名称 + 金额行 */}
+                      <div className="flex items-start gap-2 mb-2">
+                        <div className="flex-1 min-w-0">
+                          {isEditingName ? (
+                            <Input
+                              autoFocus
+                              value={item.name}
+                              onChange={(e) =>
+                                updateParsedItemName(item.id, e.target.value)
+                              }
+                              onBlur={() => setEditingField(null)}
+                              className="h-8 text-sm"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditingField({
+                                  itemId: item.id,
+                                  field: "name",
+                                })
+                              }
+                              className="text-left text-sm break-words w-full"
+                            >
+                              {item.name || (
+                                <span className="text-neutral-400">未命名</span>
+                              )}
+                              {item.qty > 1 && (
+                                <span className="text-neutral-400">
+                                  {" "}
+                                  × {item.qty}
+                                </span>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                        <div className="shrink-0 flex items-center gap-1">
+                          {isEditingAmount ? (
+                           	<Input
+                              autoFocus
+                              type="text"
+                              inputMode="decimal"
+                              value={amountDraft}
+                              onChange={(e) => setAmountDraft(e.target.value)}
+                              onBlur={() => {
+                                const n = Number(amountDraft);
+                                if (
+                                  amountDraft === '' ||
+                                  amountDraft === '-' ||
+                                  !Number.isFinite(n)
+                                ) {
+                                  updateParsedItemAmount(item.id, 0);
+                                } else {
+                                  updateParsedItemAmount(item.id, n);
+                                }
+                                setEditingField(null);
+                              }}
+                              className="h-8 w-20 text-sm text-right"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAmountDraft(item.amount.toString());
+                                setEditingField({
+                                  itemId: item.id,
+                                  field: 'amount',
+                                });
+                              }}
+                              className={`text-sm tabular-nums ${
+                                item.amount < 0
+                                  ? 'text-red-500'
+                                  : 'text-neutral-700'
+                              }`}
+                            >
+                              {currencySymbol(currency)}
+                              {item.amount.toFixed(2)}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => deleteParsedItem(item.id)}
+                            className="text-neutral-400 hover:text-red-500 px-1 text-lg leading-none"
+                            aria-label="删除"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 归属选择 */}
+                      {isProduct ? (
+                        <>
+                          <div className="flex flex-wrap gap-1">
+                            {trip.members.map((m) => {
+                              const selected = item.assignments.some(
+                                (a) => a.memberId === m.id,
+                              );
+                              return (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() =>
+                                    toggleMemberForItem(item.id, m.id)
+                                  }
+                                  className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                                    selected
+                                      ? "bg-neutral-900 text-white border-neutral-900"
+                                      : "bg-white text-neutral-500 border-neutral-300"
+                                  }`}
+                                >
+                                  {m.displayName}
+                                  {m.id === myMemberId && (
+                                    <span className="opacity-60"> · 你</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {/* qty > 1 且多人：显示数量输入 */}
+                          {item.qty > 1 && item.assignments.length > 1 && (
+                            <div className="mt-2 space-y-1 text-xs bg-neutral-50 rounded p-2">
+                              <p className="text-neutral-500 mb-1">数量分配</p>
+                              {item.assignments.map((a) => {
+                                const member = trip.members.find(
+                                  (m) => m.id === a.memberId,
+                                );
+                                return (
+                                  <div
+                                    key={a.memberId}
+                                    className="flex items-center justify-between gap-2"
+                                  >
+                                    <span className="truncate">
+                                      {member?.displayName ?? "?"}
+                                    </span>
+                                    <Input
+                                      type="number"
+                                      min={1}
+                                      max={item.qty}
+                                      value={a.qty}
+                                      onChange={(e) =>
+                                        setMemberQtyForItem(
+                                          item.id,
+                                          a.memberId,
+                                          Number(e.target.value) || 1,
+                                        )
+                                      }
+                                      className="w-16 h-7 text-xs text-right"
+                                    />
+                                  </div>
+                                );
+                              })}
+                              <div className="flex justify-between text-neutral-400 pt-1">
+                                <span>已分配</span>
+                                <span>
+                                  {item.assignments.reduce(
+                                    (a, x) => a + x.qty,
+                                    0,
+                                  )}{" "}
+                                  / {item.qty}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* qty=1 且多人：提示平分 */}
+                          {item.qty === 1 && item.assignments.length > 1 && (
+                            <p className="mt-1 text-xs text-neutral-500">
+                              ↳ 平分
+                            </p>
+                          )}
+
+                          {/* 未分配提示 */}
+                          {item.assignments.length === 0 && (
+                            <p className="mt-1 text-xs text-amber-600">
+                              ↳ 未分配，不会计入分账
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <div className="space-y-2">
+                          {(() => {
+                            const productItems = parsedItems.filter(
+                              (p) => p.type === 'product'
+                            );
+                            return (
+                              <select
+                                value={item.targetItemId ?? ''}
+                                onChange={(e) =>
+                                  setItemTarget(item.id, e.target.value)
+                                }
+                                className="w-full text-xs rounded border border-neutral-300 px-2 py-1.5 bg-white"
+                              >
+                                <option value="">
+                                  ↳ 按商品比例分摊（默认）
+                                </option>
+                                {productItems.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    ↳ 全部算给：{p.name || '未命名'}
+                                  </option>
+                                ))}
+                              </select>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* 分账结果 */}
+              <div className="pt-3 border-t">
+                <p className="text-xs text-neutral-500 mb-2">分账结果</p>
+                {(() => {
+                  const personalShares = computePersonalShares();
+                  let total = 0;
+                  trip.members.forEach((m) => {
+                    total += personalShares.get(m.id) ?? 0;
+                  });
+                  const originalTotal = receiptOriginalTotalMinor;
+                  const matches =
+                    originalTotal === null || total === originalTotal;
+
+                  return (
+                    <>
+                      {trip.members.map((m) => {
+                        const v = personalShares.get(m.id) ?? 0;
+                        if (v === 0) return null;
+                        return (
+                          <div
+                            key={m.id}
+                            className="flex justify-between text-sm"
+                          >
+                            <span>
+                              {m.displayName}
+                              {m.id === myMemberId && (
+                                <span className="text-neutral-400"> · 你</span>
+                              )}
+                            </span>
+                            <span className="font-medium tabular-nums">
+                              {currencySymbol(currency)}
+                              {(v / 100).toFixed(2)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      <div className="flex justify-between text-sm pt-2 mt-2 border-t text-neutral-500">
+                        <span>合计</span>
+                        <span className="tabular-nums">
+                          {currencySymbol(currency)}
+                          {(total / 100).toFixed(2)}
+                        </span>
+                      </div>
+                                            <p
+                        className={`text-xs pt-1 ${
+                          matches ? 'text-green-600' : 'text-amber-600'
+                        }`}
+                      >
+                        {matches
+                          ? '✓ 与收据金额一致'
+                          : `⚠ 与收据金额不一致（原始识别 ${currencySymbol(
+                              currency
+                            )}${
+                              originalTotal !== null
+                                ? (originalTotal / 100).toFixed(2)
+                                : '?'
+                            }）`}
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* 金额 */}
         <Card>
           <CardContent className="pt-4 pb-4 space-y-3">
             <Label>金额</Label>
-            <div className="flex gap-2">
-              <div className="flex items-center justify-center min-w-[3rem] h-12 px-3 bg-neutral-100 rounded text-lg font-medium">
-                {symbol}
+            {parsedItems.length > 0 ? (
+              <div className="flex items-center justify-between bg-neutral-50 rounded p-3">
+                <div>
+                  <p className="text-2xl font-bold tabular-nums">
+                    {symbol}
+                    {(
+                      parsedItems.reduce(
+                        (a, it) => a + Math.round(it.amount * 100),
+                        0,
+                      ) / 100
+                    ).toFixed(2)}
+                  </p>
+                  <p className="text-xs text-neutral-500 mt-0.5">来自收据</p>
+                </div>
               </div>
-              <Input
-                type="text"
-                inputMode="decimal"
-                placeholder="0.00"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="h-12 text-2xl font-bold"
-                autoFocus
-              />
-            </div>
+            ) : (
+              <div className="flex gap-2">
+                <div className="flex items-center justify-center min-w-[3rem] h-12 px-3 bg-neutral-100 rounded text-lg font-medium">
+                  {symbol}
+                </div>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  className="h-12 text-2xl font-bold"
+                  autoFocus
+                />
+              </div>
+            )}
 
             {/* 币种切换 */}
             <Tabs value={currency} onValueChange={setCurrency}>
@@ -515,12 +1213,12 @@ export default function AddExpensePage() {
                   onClick={() => setPayerMemberId(m.id)}
                   className={`px-4 py-2 rounded-full text-sm border transition ${
                     payerMemberId === m.id
-                      ? 'bg-neutral-900 text-white border-neutral-900'
-                      : 'bg-white text-neutral-700 border-neutral-300'
+                      ? "bg-neutral-900 text-white border-neutral-900"
+                      : "bg-white text-neutral-700 border-neutral-300"
                   }`}
                 >
                   {m.displayName}
-                  {m.id === myMemberId && ' (你)'}
+                  {m.id === myMemberId && " (你)"}
                 </button>
               ))}
             </div>
@@ -528,45 +1226,49 @@ export default function AddExpensePage() {
         </Card>
 
         {/* 谁参与 */}
-        <Card>
-          <CardContent className="pt-4 pb-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <Label>谁参与？</Label>
-              <button
-                type="button"
-                className="text-xs text-neutral-500 underline"
-                onClick={() =>
-                  setSelectedParticipants(new Set(trip.members.map((m) => m.id)))
-                }
-              >
-                全选
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {trip.members.map((m) => {
-                const selected = selectedParticipants.has(m.id);
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => toggleParticipant(m.id)}
-                    className={`px-4 py-2 rounded-full text-sm border transition ${
-                      selected
-                        ? 'bg-neutral-900 text-white border-neutral-900'
-                        : 'bg-white text-neutral-400 border-neutral-300'
-                    }`}
-                  >
-                    {selected ? '☑ ' : '☐ '}
-                    {m.displayName}
-                  </button>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
+        {parsedItems.length === 0 && (
+          <Card>
+            <CardContent className="pt-4 pb-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>谁参与？</Label>
+                <button
+                  type="button"
+                  className="text-xs text-neutral-500 underline"
+                  onClick={() =>
+                    setSelectedParticipants(
+                      new Set(trip.members.map((m) => m.id)),
+                    )
+                  }
+                >
+                  全选
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {trip.members.map((m) => {
+                  const selected = selectedParticipants.has(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => toggleParticipant(m.id)}
+                      className={`px-4 py-2 rounded-full text-sm border transition ${
+                        selected
+                          ? "bg-neutral-900 text-white border-neutral-900"
+                          : "bg-white text-neutral-400 border-neutral-300"
+                      }`}
+                    >
+                      {selected ? "☑ " : "☐ "}
+                      {m.displayName}
+                    </button>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* 分摊方式 */}
-        {selectedParticipants.size > 0 && (
+        {selectedParticipants.size > 0 && parsedItems.length === 0 && (
           <Card>
             <CardContent className="pt-4 pb-4 space-y-3">
               <Label>分摊方式</Label>
@@ -581,14 +1283,14 @@ export default function AddExpensePage() {
                 </TabsList>
               </Tabs>
 
-              {splitMode === 'equal' && perPerson > 0 && (
+              {splitMode === "equal" && perPerson > 0 && (
                 <p className="text-sm text-neutral-500">
-                  每人约 {currencySymbol(trip.baseCurrency)}{' '}
+                  每人约 {currencySymbol(trip.baseCurrency)}{" "}
                   {(perPerson / 100).toFixed(2)}
                 </p>
               )}
 
-              {splitMode === 'custom' && (
+              {splitMode === "custom" && (
                 <div className="space-y-2">
                   {trip.members
                     .filter((m) => selectedParticipants.has(m.id))
@@ -604,7 +1306,7 @@ export default function AddExpensePage() {
                           type="text"
                           inputMode="decimal"
                           className="w-24 text-right"
-                          value={customShares[m.id] ?? ''}
+                          value={customShares[m.id] ?? ""}
                           onChange={(e) =>
                             setCustomShares((prev) => ({
                               ...prev,
@@ -619,14 +1321,14 @@ export default function AddExpensePage() {
                   {(() => {
                     const sum = Array.from(selectedParticipants).reduce(
                       (acc, id) => {
-                        const v = customShares[id] ?? '';
+                        const v = customShares[id] ?? "";
                         if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(v)) return acc;
-                        const parts = v.split('.');
+                        const parts = v.split(".");
                         const major = parts[0];
-                        const minorPart = (parts[1] ?? '').padEnd(2, '0');
+                        const minorPart = (parts[1] ?? "").padEnd(2, "0");
                         return acc + Number(major + minorPart);
                       },
-                      0
+                      0,
                     );
                     const ok = sum === amountMinor && amountMinor > 0;
                     return (
@@ -635,8 +1337,8 @@ export default function AddExpensePage() {
                         <span
                           className={
                             ok
-                              ? 'text-green-600 font-medium'
-                              : 'text-red-600 font-medium'
+                              ? "text-green-600 font-medium"
+                              : "text-red-600 font-medium"
                           }
                         >
                           {symbol}
@@ -653,15 +1355,41 @@ export default function AddExpensePage() {
         )}
       </div>
 
+			{/* 收据全屏查看 */}
+      {showReceiptFull && receiptImage && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
+          onClick={() => setShowReceiptFull(false)}
+        >
+          <img
+            src={receiptImage}
+            alt="收据"
+            className="max-w-full max-h-full object-contain"
+          />
+          <button
+            type="button"
+            className="absolute top-4 right-4 text-white text-2xl leading-none"
+            onClick={() => setShowReceiptFull(false)}
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* 保存按钮 */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4">
         <div className="max-w-md mx-auto">
           <Button
             className="w-full h-12 text-base"
             onClick={handleSave}
-            disabled={saving || !amount || !description.trim()}
+            disabled={
+              saving ||
+              !description.trim() ||
+              (parsedItems.length === 0 && !amount)
+            }
           >
-            {saving ? '保存中...' : '保存'}
+            {saving ? "保存中..." : "保存"}
           </Button>
         </div>
       </div>
