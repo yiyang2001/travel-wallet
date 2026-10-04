@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   getTrip,
   addExpense,
@@ -43,7 +43,10 @@ function currencySymbol(code: string): string {
 export default function AddExpensePage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const code = params.code as string;
+  const editExpenseId = searchParams.get('edit');
+  const isEditMode = !!editExpenseId;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -80,7 +83,7 @@ export default function AddExpensePage() {
     number | null
   >(null);
 
-  useEffect(() => {
+    useEffect(() => {
     async function load() {
       setLoading(true);
       const tripResult = await getTrip({ inviteCode: code });
@@ -94,24 +97,67 @@ export default function AddExpensePage() {
       const memberId = getMemberId(code);
       setMyMemberId(memberId);
 
-      // 默认付款人 = 自己
-      if (memberId) {
-        setPayerMemberId(memberId);
+      if (!isEditMode) {
+        // 新建模式：默认值
+        if (memberId) setPayerMemberId(memberId);
+        setSelectedParticipants(
+          new Set(tripResult.data.members.map((m) => m.id))
+        );
+        setExchangeRateInput(tripResult.data.defaultExchangeRate);
+      } else {
+        // 编辑模式：加载现有 expense
+        const { getExpenseForEdit } = await import('@/lib/actions');
+        const exResult = await getExpenseForEdit({
+          inviteCode: code,
+          expenseId: editExpenseId!,
+        });
+        if (!exResult.ok) {
+          setError(exResult.error);
+          setLoading(false);
+          return;
+        }
+        const ex = exResult.data;
+        setDescription(ex.description);
+        setAmount((ex.originalAmountMinor / 100).toFixed(2));
+        setCurrency(ex.originalCurrency);
+        setExchangeRateInput(String(ex.exchangeRateUsed));
+        setPayerMemberId(ex.payerMemberId);
+        setSelectedParticipants(
+          new Set(ex.participants.map((p) => p.memberId))
+        );
+
+        // 判断原账是"平均"还是"自定义"
+        const n = ex.participants.length;
+        const avgBase = Math.floor(ex.baseAmountMinor / n);
+        const avgRem = ex.baseAmountMinor - avgBase * n;
+
+        // 检查每个参与者的份额是否和平均分配一致
+        const isEqual = ex.participants.every((p, i) => {
+          const expected = i < avgRem ? avgBase + 1 : avgBase;
+          return Math.abs(p.shareAmount - expected) <= 1;
+        });
+
+        if (isEqual) {
+          setSplitMode('equal');
+          setCustomShares({});
+        } else {
+          setSplitMode('custom');
+          // 关键：从 base（MYR）minor 换回原币 minor
+          const shares: Record<string, string> = {};
+          for (const p of ex.participants) {
+            const originalMinor = Math.round(
+              p.shareAmount / ex.exchangeRateUsed
+            );
+            shares[p.memberId] = (originalMinor / 100).toFixed(2);
+          }
+          setCustomShares(shares);
+        }
       }
-
-      // 默认参与者 = 全部成员
-      setSelectedParticipants(new Set(tripResult.data.members.map((m) => m.id)));
-
-      // 默认汇率 = Trip 默认汇率
-      setExchangeRateInput(tripResult.data.defaultExchangeRate);
-
-			// 默认币种 = Trip 默认消费币种
-			setCurrency(tripResult.data.defaultExpenseCurrency);
 
       setLoading(false);
     }
     load();
-  }, [code]);
+  }, [code, isEditMode, editExpenseId]);
 
 	  function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -631,25 +677,46 @@ export default function AddExpensePage() {
 
 		setSaving(true);
 		try {
-			const result = await addExpense({
-				inviteCode: code,
-				description: description.trim(),
-				originalAmountMinor: finalAmountMinor,
-				originalCurrency: currency,
-				exchangeRateUsed: effectiveRate,
-				payerMemberId,
-				participantMemberIds: finalParticipantIds,
-				customShares:
-					finalCustomShares.length > 0 ? finalCustomShares : undefined,
-				idempotencyKey: generateUUID(),
-			});
+			if (isEditMode && editExpenseId) {
+        const { updateExpense } = await import('@/lib/actions');
+        const result = await updateExpense({
+          inviteCode: code,
+          expenseId: editExpenseId,
+          description: description.trim(),
+          originalAmountMinor: finalAmountMinor,
+          originalCurrency: currency,
+          exchangeRateUsed: effectiveRate,
+          payerMemberId,
+          participantMemberIds: finalParticipantIds,
+          customShares:
+            finalCustomShares.length > 0 ? finalCustomShares : undefined,
+        });
 
-			if (!result.ok) {
-				setError(result.error);
-				return;
-			}
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
+      } else {
+        const result = await addExpense({
+          inviteCode: code,
+          description: description.trim(),
+          originalAmountMinor: finalAmountMinor,
+          originalCurrency: currency,
+          exchangeRateUsed: effectiveRate,
+          payerMemberId,
+          participantMemberIds: finalParticipantIds,
+          customShares:
+            finalCustomShares.length > 0 ? finalCustomShares : undefined,
+          idempotencyKey: generateUUID(),
+        });
 
-			router.push(`/trip/${code}`);
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
+      }
+
+      router.push(`/trip/${code}`);
 		} finally {
 			setSaving(false);
 		}
@@ -696,7 +763,9 @@ export default function AddExpensePage() {
           >
             ← 返回
           </Button>
-          <h1 className="text-lg font-bold">记一笔</h1>
+          <h1 className="text-lg font-bold">
+            {isEditMode ? "编辑" : "记一笔"}
+          </h1>
         </div>
 
         {error && (
@@ -706,76 +775,80 @@ export default function AddExpensePage() {
         )}
 
         {/* 收据卡片 */}
-        <Card>
-          <CardContent className="pt-4 pb-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <Label>📷 收据</Label>
-              {parsedItems.length > 0 && (
+        {!isEditMode && (
+          <Card>
+            <CardContent className="pt-4 pb-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>📷 收据</Label>
+                {parsedItems.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-neutral-500 underline"
+                    onClick={clearParsedItems}
+                  >
+                    清除
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={parsing}
+                  onClick={() => cameraInputRef.current?.click()}
+                >
+                  📷 拍照
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={parsing}
+                  onClick={() => galleryInputRef.current?.click()}
+                >
+                  🖼 相册
+                </Button>
+              </div>
+
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={handleImageUpload}
+              />
+              <input
+                ref={galleryInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleImageUpload}
+              />
+
+              {parsing && <p className="text-sm text-neutral-500">识别中...</p>}
+              {parseError && (
+                <p className="text-xs text-red-600">{parseError}</p>
+              )}
+              {receiptImage && (
                 <button
                   type="button"
-                  className="text-xs text-neutral-500 underline"
-                  onClick={clearParsedItems}
+                  onClick={() => setShowReceiptFull(true)}
+                  className="mt-2 w-full text-left"
                 >
-                  清除
+                  <img
+                    src={receiptImage}
+                    alt="收据"
+                    className="w-full max-h-48 object-contain rounded border bg-neutral-50"
+                  />
+                  <p className="text-xs text-neutral-400 mt-1 text-center">
+                    点击查看大图
+                  </p>
                 </button>
               )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={parsing}
-                onClick={() => cameraInputRef.current?.click()}
-              >
-                📷 拍照
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={parsing}
-                onClick={() => galleryInputRef.current?.click()}
-              >
-                🖼 相册
-              </Button>
-            </div>
-
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={handleImageUpload}
-            />
-            <input
-              ref={galleryInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleImageUpload}
-            />
-
-            {parsing && <p className="text-sm text-neutral-500">识别中...</p>}
-            {parseError && <p className="text-xs text-red-600">{parseError}</p>}
-						{receiptImage && (
-              <button
-                type="button"
-                onClick={() => setShowReceiptFull(true)}
-                className="mt-2 w-full text-left"
-              >
-                <img
-                  src={receiptImage}
-                  alt="收据"
-                  className="w-full max-h-48 object-contain rounded border bg-neutral-50"
-                />
-                <p className="text-xs text-neutral-400 mt-1 text-center">
-                  点击查看大图
-                </p>
-              </button>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
 
         {/* 谁买了什么 */}
         {parsedItems.length > 0 && (
@@ -787,21 +860,21 @@ export default function AddExpensePage() {
                   <button
                     type="button"
                     className="text-neutral-500 underline"
-                    onClick={() => addManualItem('product')}
+                    onClick={() => addManualItem("product")}
                   >
                     + Product
                   </button>
                   <button
                     type="button"
                     className="text-neutral-500 underline"
-                    onClick={() => addManualItem('discount')}
+                    onClick={() => addManualItem("discount")}
                   >
                     + Discount
                   </button>
                   <button
                     type="button"
                     className="text-neutral-500 underline"
-                    onClick={() => addManualItem('tax')}
+                    onClick={() => addManualItem("tax")}
                   >
                     + Tax
                   </button>
@@ -861,7 +934,7 @@ export default function AddExpensePage() {
                         </div>
                         <div className="shrink-0 flex items-center gap-1">
                           {isEditingAmount ? (
-                           	<Input
+                            <Input
                               autoFocus
                               type="text"
                               inputMode="decimal"
@@ -870,8 +943,8 @@ export default function AddExpensePage() {
                               onBlur={() => {
                                 const n = Number(amountDraft);
                                 if (
-                                  amountDraft === '' ||
-                                  amountDraft === '-' ||
+                                  amountDraft === "" ||
+                                  amountDraft === "-" ||
                                   !Number.isFinite(n)
                                 ) {
                                   updateParsedItemAmount(item.id, 0);
@@ -889,13 +962,13 @@ export default function AddExpensePage() {
                                 setAmountDraft(item.amount.toString());
                                 setEditingField({
                                   itemId: item.id,
-                                  field: 'amount',
+                                  field: "amount",
                                 });
                               }}
                               className={`text-sm tabular-nums ${
                                 item.amount < 0
-                                  ? 'text-red-500'
-                                  : 'text-neutral-700'
+                                  ? "text-red-500"
+                                  : "text-neutral-700"
                               }`}
                             >
                               {currencySymbol(currency)}
@@ -1007,11 +1080,11 @@ export default function AddExpensePage() {
                         <div className="space-y-2">
                           {(() => {
                             const productItems = parsedItems.filter(
-                              (p) => p.type === 'product'
+                              (p) => p.type === "product",
                             );
                             return (
                               <select
-                                value={item.targetItemId ?? ''}
+                                value={item.targetItemId ?? ""}
                                 onChange={(e) =>
                                   setItemTarget(item.id, e.target.value)
                                 }
@@ -1022,7 +1095,7 @@ export default function AddExpensePage() {
                                 </option>
                                 {productItems.map((p) => (
                                   <option key={p.id} value={p.id}>
-                                    ↳ 全部算给：{p.name || '未命名'}
+                                    ↳ 全部算给：{p.name || "未命名"}
                                   </option>
                                 ))}
                               </select>
@@ -1078,19 +1151,19 @@ export default function AddExpensePage() {
                           {(total / 100).toFixed(2)}
                         </span>
                       </div>
-                                            <p
+                      <p
                         className={`text-xs pt-1 ${
-                          matches ? 'text-green-600' : 'text-amber-600'
+                          matches ? "text-green-600" : "text-amber-600"
                         }`}
                       >
                         {matches
-                          ? '✓ 与收据金额一致'
+                          ? "✓ 与收据金额一致"
                           : `⚠ 与收据金额不一致（原始识别 ${currencySymbol(
-                              currency
+                              currency,
                             )}${
                               originalTotal !== null
                                 ? (originalTotal / 100).toFixed(2)
-                                : '?'
+                                : "?"
                             }）`}
                       </p>
                     </>
@@ -1355,7 +1428,7 @@ export default function AddExpensePage() {
         )}
       </div>
 
-			{/* 收据全屏查看 */}
+      {/* 收据全屏查看 */}
       {showReceiptFull && receiptImage && (
         <div
           className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
@@ -1389,7 +1462,7 @@ export default function AddExpensePage() {
               (parsedItems.length === 0 && !amount)
             }
           >
-            {saving ? "保存中..." : "保存"}
+            {saving ? "保存中..." : isEditMode ? "保存修改" : "保存"}
           </Button>
         </div>
       </div>

@@ -10,7 +10,8 @@
     "test:engine": "tsx scripts/test-engine.ts",
     "test:actions": "tsx scripts/test-actions.ts",
     "test-receipt": "tsx scripts/test-receipt.ts",
-    "test-openrouter": "tsx scripts/test-openrouter.ts"
+    "test-openrouter": "tsx scripts/test-openrouter.ts",
+    "test-update-expense": "tsx scripts/test-update-expense.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

@@ -847,3 +847,207 @@ export async function exportExpensesCSV(input: {
 
   return { ok: true, data: { csv, filename } };
 }
+
+// ============ Action 18: getExpenseForEdit ============
+
+export async function getExpenseForEdit(input: {
+  inviteCode: string;
+  expenseId: string;
+}): Promise<
+  ActionResult<{
+    id: string;
+    description: string;
+    originalAmountMinor: number;
+    originalCurrency: string;
+    exchangeRateUsed: number;
+    baseAmountMinor: number;
+    payerMemberId: string;
+    participants: Array<{ memberId: string; shareAmount: number }>;
+  }>
+> {
+  const trip = await findTripByInviteCode(input.inviteCode);
+  if (!trip) return { ok: false, error: 'NOT_FOUND' };
+
+  const { data: expense, error: e1 } = await supabaseAdmin
+    .from('expenses')
+    .select(
+      'id, description, original_amount, original_currency, exchange_rate_used, base_amount, payer_member_id'
+    )
+    .eq('id', input.expenseId)
+    .eq('trip_id', trip.id)
+    .single();
+
+  if (e1 || !expense) return { ok: false, error: 'NOT_FOUND' };
+
+  const { data: participants, error: e2 } = await supabaseAdmin
+    .from('expense_participants')
+    .select('member_id, share_amount')
+    .eq('expense_id', input.expenseId);
+
+  if (e2) return { ok: false, error: `DB_ERROR: ${e2.message}` };
+
+  return {
+    ok: true,
+    data: {
+      id: expense.id,
+      description: expense.description,
+      originalAmountMinor: expense.original_amount,
+      originalCurrency: expense.original_currency,
+      exchangeRateUsed: Number(expense.exchange_rate_used),
+      baseAmountMinor: expense.base_amount,
+      payerMemberId: expense.payer_member_id,
+      participants: (participants ?? []).map((p) => ({
+        memberId: p.member_id,
+        shareAmount: p.share_amount,
+      })),
+    },
+  };
+}
+
+// ============ Action 19: updateExpense ============
+
+export async function updateExpense(input: {
+  inviteCode: string;
+  expenseId: string;
+  description: string;
+  originalAmountMinor: number;
+  originalCurrency: string;
+  exchangeRateUsed: number;
+  payerMemberId: string;
+  participantMemberIds: string[];
+  customShares?: Array<{ memberId: string; shareAmount: number }>;
+}): Promise<ActionResult<{ ok: true }>> {
+  const trip = await findTripByInviteCode(input.inviteCode);
+  if (!trip) return { ok: false, error: 'NOT_FOUND' };
+
+  // 校验 expense 属于该 trip
+  const { data: existing, error: e0 } = await supabaseAdmin
+    .from('expenses')
+    .select('id')
+    .eq('id', input.expenseId)
+    .eq('trip_id', trip.id)
+    .single();
+
+  if (e0 || !existing) return { ok: false, error: 'NOT_FOUND' };
+
+  // 校验字段
+  if (
+    !input.description ||
+    input.description.trim().length === 0 ||
+    input.description.length > 200
+  ) {
+    return { ok: false, error: 'INVALID_DESCRIPTION' };
+  }
+
+  if (
+    !Number.isSafeInteger(input.originalAmountMinor) ||
+    input.originalAmountMinor <= 0
+  ) {
+    return { ok: false, error: 'INVALID_AMOUNT' };
+  }
+
+  const uniqueParticipants = Array.from(new Set(input.participantMemberIds));
+  if (uniqueParticipants.length < 1) {
+    return { ok: false, error: 'INVALID_PARTICIPANTS' };
+  }
+
+  // 校验所有 member 属于该 trip
+  const allMemberIds = [input.payerMemberId, ...uniqueParticipants];
+  const { data: members, error: memberError } = await supabaseAdmin
+    .from('trip_members')
+    .select('id, created_at')
+    .eq('trip_id', trip.id)
+    .in('id', allMemberIds);
+
+  if (memberError) return { ok: false, error: `DB_ERROR: ${memberError.message}` };
+
+  const foundIds = new Set((members ?? []).map((m) => m.id));
+  for (const id of allMemberIds) {
+    if (!foundIds.has(id)) return { ok: false, error: 'NOT_FOUND' };
+  }
+
+  // 计算 base
+  const baseAmountMinor = convertToBase({
+    originalAmountMinor: input.originalAmountMinor,
+    exchangeRate: input.exchangeRateUsed,
+  });
+
+  // 计算 shares
+  let shares: Array<{ memberId: string; shareAmount: number }>;
+
+  if (input.customShares && input.customShares.length > 0) {
+    const customMap = new Map(
+      input.customShares.map((cs) => [cs.memberId, cs.shareAmount])
+    );
+
+    for (const id of uniqueParticipants) {
+      if (!customMap.has(id)) {
+        return { ok: false, error: 'MISSING_SHARE_FOR_PARTICIPANT' };
+      }
+    }
+
+    let customSum = 0;
+    for (const id of uniqueParticipants) {
+      const s = customMap.get(id)!;
+      if (!Number.isSafeInteger(s) || s <= 0) {
+        return { ok: false, error: 'INVALID_CUSTOM_SHARE' };
+      }
+      customSum += s;
+    }
+
+    if (customSum !== input.originalAmountMinor) {
+      return { ok: false, error: 'SHARES_DO_NOT_MATCH_TOTAL' };
+    }
+
+    const baseShares = uniqueParticipants.map((id) =>
+      convertToBase({
+        originalAmountMinor: customMap.get(id)!,
+        exchangeRate: input.exchangeRateUsed,
+      })
+    );
+
+    const baseSum = baseShares.reduce((a, b) => a + b, 0);
+    if (baseSum !== baseAmountMinor) {
+      const diff = baseAmountMinor - baseSum;
+      let maxIdx = 0;
+      for (let i = 1; i < baseShares.length; i++) {
+        if (baseShares[i] > baseShares[maxIdx]) maxIdx = i;
+      }
+      baseShares[maxIdx] += diff;
+    }
+
+    shares = uniqueParticipants.map((id, i) => ({
+      memberId: id,
+      shareAmount: baseShares[i],
+    }));
+  } else {
+    const participantMembers: MemberCreatedAt[] = uniqueParticipants.map(
+      (id) => {
+        const m = members!.find((x) => x.id === id)!;
+        return { id, createdAt: new Date(m.created_at) };
+      }
+    );
+
+    shares = splitEqually({
+      totalMinor: baseAmountMinor,
+      members: participantMembers,
+    });
+  }
+
+  // 调用 RPC
+  const { error: rpcError } = await supabaseAdmin.rpc('update_expense_atomic', {
+    p_expense_id: input.expenseId,
+    p_description: input.description.trim(),
+    p_original_amount: input.originalAmountMinor,
+    p_original_currency: input.originalCurrency,
+    p_exchange_rate_used: input.exchangeRateUsed,
+    p_base_amount: baseAmountMinor,
+    p_payer_member_id: input.payerMemberId,
+    p_participant_ids: shares.map((s) => s.memberId),
+    p_share_amounts: shares.map((s) => s.shareAmount),
+  });
+
+  if (rpcError) return { ok: false, error: `DB_ERROR: ${rpcError.message}` };
+
+  return { ok: true, data: { ok: true } };
+}

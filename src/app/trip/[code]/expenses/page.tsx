@@ -253,7 +253,11 @@ export default function ExpensesPage() {
                     <div className="mt-2 flex justify-end gap-3">
                       <button
                         className="text-xs text-neutral-500 hover:text-neutral-700"
-                        onClick={() => openEdit(e)}
+                        onClick={() =>
+                          router.push(
+                            `/trip/${code}/add?edit=${e.id}`
+                          )
+                        }
                       >
                         编辑
                       </button>
